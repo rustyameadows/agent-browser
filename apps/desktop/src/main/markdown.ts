@@ -1,4 +1,3 @@
-import { JSDOM } from 'jsdom';
 import { Defuddle } from 'defuddle/node';
 
 export interface MarkdownSnapshotInput {
@@ -28,8 +27,7 @@ export const extractMarkdownFromHtml = async (
     throw new Error('Cannot generate Markdown from an empty page snapshot.');
   }
 
-  const dom = new JSDOM(input.html, { url: input.url });
-  const result = await Defuddle(dom.window.document, input.url, {
+  const result = await Defuddle(input.html, input.url, {
     markdown: true,
     separateMarkdown: true,
     useAsync: false,
