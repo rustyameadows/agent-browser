@@ -2,6 +2,10 @@
 
 Agent Browser is the bootstrap monorepo for the macOS Electron browser shell described in [agent-browser-plan.md](agent-browser-plan.md). The first push includes a working Electron desktop shell, a shared protocol package for IPC typing, and GitHub Actions that package unsigned macOS development artifacts.
 
+## Guides
+
+- [Human-Agent Collaboration Guide](docs/human-agent-collaboration.md)
+
 ## Workspace Layout
 
 - `apps/desktop`: Electron main process, trusted React chrome, and the embedded page view.
@@ -21,11 +25,13 @@ The desktop shell opens a checked-in `file://` fixture on first launch. Replace 
 
 The chrome also includes a DOM pick mode. Use the crosshair button or `View > Toggle Pick Mode`, then click any page element to capture a structured descriptor. The selected descriptor stays in the trusted chrome until you clear it, and the JSON can be copied directly from the inspector strip.
 
+The toolbar also includes `Feedback Loop`. Picker selections can open a live draft automatically, so humans can annotate the exact element they clicked, agents can reply in-thread, and status can move from `open` to `resolved` in the same shared context. See the [Human-Agent Collaboration Guide](docs/human-agent-collaboration.md) for the expected workflow.
+
 The top toolbar now also includes `View as MD`. That button opens a dedicated trusted Markdown panel beside the page view, snapshots the active page DOM in the main process, converts it with Defuddle, and exposes the raw Markdown plus page metadata. Use the panel actions to copy or refresh the extracted Markdown for the current page.
 
 The toolbar also includes `MCP Status`, a live red/yellow/green indicator for the local MCP server. That button opens a dedicated diagnostics panel with the current transport URL, registration manifest path, exposed tools, recent request activity, and a built-in self-test against `/health`, `initialize`, and `tools/list`.
 
-While the app is running, the main process also starts a localhost JSON-RPC tool server at `127.0.0.1`. The current registration manifest is written to `~/Library/Application Support/Agent Browser/mcp-registration.json` on macOS and includes the URL plus bearer token header needed by local tool clients. The current tool set includes `browser.listTabs`, `browser.getWindowState`, `browser.resizeWindow`, `page.navigate`, `picker.enable`, `picker.disable`, `picker.lastSelection`, `page.viewAsMarkdown`, `page.screenshot`, `artifacts.get`, `artifacts.list`, and `artifacts.delete`.
+While the app is running, the main process also starts a localhost JSON-RPC tool server at `127.0.0.1`. The current registration manifest is written to `~/Library/Application Support/Agent Browser/mcp-registration.json` on macOS and includes the URL plus bearer token header needed by local tool clients. The current tool set includes `browser.listTabs`, `browser.getWindowState`, `browser.resizeWindow`, `page.navigate`, `picker.enable`, `picker.disable`, `picker.lastSelection`, `feedback.getState`, `feedback.list`, `feedback.create`, `feedback.reply`, `feedback.setStatus`, `page.viewAsMarkdown`, `page.screenshot`, `artifacts.get`, `artifacts.list`, and `artifacts.delete`.
 
 Screenshot tool results are artifact-backed. The tool server stores screenshots under the app’s data directory, returns lightweight metadata plus an `artifactId`, and lets local clients resolve the saved file path through `artifacts.get`. Supported screenshot targets are the visible page view, a selected DOM element, and the full app window including native frame.
 
