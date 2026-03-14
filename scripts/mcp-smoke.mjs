@@ -454,7 +454,9 @@ const run = async () => {
       'page.viewAsMarkdown did not return the expected fixture title.',
     )
     assert(
-      markdown.body?.result?.structuredContent?.markdown?.includes('Local Fixture Loaded'),
+      markdown.body?.result?.structuredContent?.markdown?.includes(
+        'Your local launchpad is up, humming, and ready for the next move.',
+      ),
       'page.viewAsMarkdown did not contain the expected fixture Markdown.',
     )
 

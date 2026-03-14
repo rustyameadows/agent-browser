@@ -36,6 +36,15 @@ describe('mcp view protocol guards', () => {
             outcome: 'success',
           },
         ],
+        activeToolCalls: 1,
+        busySince: '2026-03-13T21:09:58.000Z',
+        lastBusyAt: '2026-03-13T21:10:00.000Z',
+        agentActivity: {
+          annotationId: 'annotation-1',
+          phase: 'in_progress',
+          message: 'Agent is working on this.',
+          updatedAt: '2026-03-13T21:10:00.000Z',
+        },
         lastSelfTest: {
           status: 'passed',
           checkedAt: '2026-03-13T21:09:00.000Z',
@@ -55,6 +64,17 @@ describe('mcp view protocol guards', () => {
       isMcpViewState({
         ...createEmptyMcpViewState(),
         recentRequests: [{ at: 'now', method: 'initialize', detail: 'initialize', outcome: 'ok' }],
+      }),
+    ).toBe(false);
+    expect(
+      isMcpViewState({
+        ...createEmptyMcpViewState(),
+        agentActivity: {
+          annotationId: 'annotation-1',
+          phase: 'working',
+          message: 'nope',
+          updatedAt: '2026-03-13T21:10:00.000Z',
+        },
       }),
     ).toBe(false);
   });

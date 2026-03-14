@@ -1,4 +1,4 @@
-import type { McpViewCommand, McpViewState } from './mcp';
+import type { McpAgentActivityPhase, McpViewCommand, McpViewState } from './mcp';
 import type { MarkdownViewCommand, MarkdownViewState } from './markdown';
 import type { FeedbackCommand, FeedbackState } from './feedback';
 
@@ -10,6 +10,7 @@ export const PICKER_GET_STATE_CHANNEL = 'picker:get-state';
 export const PICKER_STATE_CHANNEL = 'picker:state';
 export const PAGE_PICKER_CONTROL_CHANNEL = 'page-picker:control';
 export const PAGE_PICKER_EVENT_CHANNEL = 'page-picker:event';
+export const PAGE_AGENT_OVERLAY_CHANNEL = 'page-agent:overlay';
 
 export const navigationActions = ['navigate', 'reload', 'stop', 'back', 'forward'] as const;
 export const pickerActions = ['enable', 'disable', 'toggle', 'clearSelection'] as const;
@@ -80,6 +81,15 @@ export type PagePickerEvent =
   | {
       type: 'cancelled';
     };
+
+export interface PageAgentOverlayState {
+  annotationId: string;
+  selection: ElementDescriptor;
+  phase: McpAgentActivityPhase;
+  message: string;
+  updatedAt: string;
+  sourceUrl: string;
+}
 
 export interface NavigationState {
   url: string;
@@ -232,6 +242,23 @@ export const isPagePickerEvent = (value: unknown): value is PagePickerEvent => {
   }
 
   return value.type === 'selection' && isElementDescriptor(value.descriptor);
+};
+
+export const isPageAgentOverlayState = (value: unknown): value is PageAgentOverlayState => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.annotationId === 'string' &&
+    isElementDescriptor(value.selection) &&
+    (value.phase === 'acknowledged' ||
+      value.phase === 'in_progress' ||
+      value.phase === 'done') &&
+    typeof value.message === 'string' &&
+    typeof value.updatedAt === 'string' &&
+    typeof value.sourceUrl === 'string'
+  );
 };
 
 export const isNavigationState = (value: unknown): value is NavigationState => {

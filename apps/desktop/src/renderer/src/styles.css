@@ -61,6 +61,28 @@ input {
   background: linear-gradient(180deg, var(--chrome-bg-top), var(--chrome-bg-bottom));
   border-bottom: 1px solid var(--border);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  transition:
+    background 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+}
+
+.shell__panel--busy {
+  background:
+    linear-gradient(180deg, rgba(232, 244, 255, 0.98), rgba(238, 245, 255, 0.94) 46%, var(--chrome-bg-bottom)),
+    linear-gradient(90deg, rgba(10, 132, 255, 0.08), transparent 48%, rgba(10, 132, 255, 0.12));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    inset 0 6px 26px rgba(10, 132, 255, 0.08);
+}
+
+.shell__panel--done {
+  background:
+    linear-gradient(180deg, rgba(240, 255, 247, 0.98), rgba(239, 247, 241, 0.94) 46%, var(--chrome-bg-bottom)),
+    linear-gradient(90deg, rgba(26, 167, 114, 0.08), transparent 48%, rgba(26, 167, 114, 0.12));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    inset 0 6px 26px rgba(26, 167, 114, 0.08);
 }
 
 .shell__tabstrip,
@@ -324,6 +346,7 @@ a {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color 180ms ease;
 }
 
 .shell__diagnostic--error {
@@ -346,6 +369,10 @@ a {
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.78);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition:
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
 }
 
 .shell__selectionBar--armed {
@@ -472,6 +499,21 @@ a {
   color: #164e97;
 }
 
+.shell__pillButton--mcpBusy {
+  border-color: rgba(10, 132, 255, 0.4);
+  background: linear-gradient(180deg, #ecf5ff, #dbeaff);
+  color: #0f5ab1;
+  box-shadow:
+    var(--shadow),
+    0 0 0 3px rgba(10, 132, 255, 0.1);
+}
+
+.shell__pillButton--mcpDone {
+  border-color: rgba(26, 167, 114, 0.32);
+  background: linear-gradient(180deg, #effcf5, #dff6e8);
+  color: #15764f;
+}
+
 .shell__pillButton--feedback {
   min-height: 34px;
   padding: 0 13px 0 10px;
@@ -558,6 +600,40 @@ a {
 .shell__statusDot--red {
   background: #e05a47;
   box-shadow: 0 0 0 3px rgba(224, 90, 71, 0.14);
+}
+
+.shell__statusDot--busy {
+  animation: shell-pulse 1.15s ease-in-out infinite;
+}
+
+.shell__statusDot--done {
+  animation: shell-success-pulse 1s ease-out 1;
+}
+
+.shell__panel--busy .shell__tab--active,
+.shell__panel--busy .shell__selectionBar {
+  border-color: rgba(10, 132, 255, 0.24);
+}
+
+.shell__panel--busy .shell__selectionBar {
+  background: rgba(237, 246, 255, 0.9);
+}
+
+.shell__panel--busy .shell__diagnostic {
+  color: #0f5ab1;
+}
+
+.shell__panel--done .shell__tab--active,
+.shell__panel--done .shell__selectionBar {
+  border-color: rgba(26, 167, 114, 0.24);
+}
+
+.shell__panel--done .shell__selectionBar {
+  background: rgba(241, 251, 245, 0.9);
+}
+
+.shell__panel--done .shell__diagnostic {
+  color: #15764f;
 }
 
 .markdownSurface {
@@ -1224,6 +1300,20 @@ a {
 
   50% {
     box-shadow: 0 0 0 5px rgba(10, 132, 255, 0.2);
+  }
+}
+
+@keyframes shell-success-pulse {
+  0% {
+    box-shadow: 0 0 0 3px rgba(26, 167, 114, 0.22);
+  }
+
+  60% {
+    box-shadow: 0 0 0 6px rgba(26, 167, 114, 0.12);
+  }
+
+  100% {
+    box-shadow: 0 0 0 3px rgba(26, 167, 114, 0.14);
   }
 }
 

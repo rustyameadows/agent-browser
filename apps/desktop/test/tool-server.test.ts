@@ -25,6 +25,7 @@ describe('ToolServer', () => {
     const storageDir = await mkdtemp(path.join(os.tmpdir(), 'agent-browser-tool-server-'));
     tempDirs.push(storageDir);
 
+    let lastNavigationAction: string | null = null;
     let lastNavigationTarget: string | null = null;
     let lastResizeTarget: { width: number; height: number; target?: string } | null = null;
     let screenshotCounter = 0;
@@ -71,6 +72,7 @@ describe('ToolServer', () => {
           },
         ],
         executeNavigationCommand: async (command) => {
+          lastNavigationAction = command.action;
           lastNavigationTarget = command.action === 'navigate' ? command.target : null;
           return {
             ...createEmptyNavigationState(),
@@ -292,7 +294,9 @@ describe('ToolServer', () => {
       };
     };
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.navigate');
+    expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.reload');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('feedback.getState');
+    expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('feedback.progress');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.viewAsMarkdown');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.screenshot');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('artifacts.get');
@@ -417,6 +421,47 @@ describe('ToolServer', () => {
       feedbackStatePayload.result.structuredContent.feedback.annotations[0]?.replies[0]?.author,
     ).toBe('agent');
 
+    const feedbackProgressResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'feedback-progress',
+        method: 'tools/call',
+        params: {
+          name: 'feedback.progress',
+          arguments: {
+            annotationId: 'annotation-1',
+            phase: 'done',
+          },
+        },
+      }),
+    });
+
+    const feedbackProgressPayload = (await feedbackProgressResponse.json()) as {
+      result: {
+        structuredContent: {
+          annotation: {
+            id: string;
+            status: string;
+            replies: Array<{ body: string }>;
+          };
+          agentActivity: {
+            phase: string;
+          };
+        };
+      };
+    };
+    expect(feedbackProgressResponse.status).toBe(200);
+    expect(feedbackProgressPayload.result.structuredContent.annotation.status).toBe('resolved');
+    expect(
+      feedbackProgressPayload.result.structuredContent.annotation.replies.at(-1)?.body,
+    ).toBe('Agent marked this complete.');
+    expect(feedbackProgressPayload.result.structuredContent.agentActivity.phase).toBe('done');
+
     const navigateResponse = await fetch(connection.url, {
       method: 'POST',
       headers: {
@@ -449,6 +494,25 @@ describe('ToolServer', () => {
       'https://nodesnodesnodes.com',
     );
     expect(lastNavigationTarget).toBe('https://nodesnodesnodes.com');
+
+    const reloadResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'page-reload',
+        method: 'tools/call',
+        params: {
+          name: 'page.reload',
+          arguments: {},
+        },
+      }),
+    });
+    expect(reloadResponse.status).toBe(200);
+    expect(lastNavigationAction).toBe('reload');
 
     const markdownResponse = await fetch(connection.url, {
       method: 'POST',
@@ -749,6 +813,8 @@ describe('ToolServer', () => {
     const diagnosticsAfterCalls = server.getDiagnostics();
     expect(diagnosticsAfterCalls.requestCount).toBeGreaterThanOrEqual(12);
     expect(diagnosticsAfterCalls.recentRequests[0]?.detail).toBe('artifacts.delete');
+    expect(diagnosticsAfterCalls.activeToolCalls).toBe(0);
+    expect(diagnosticsAfterCalls.agentActivity?.phase).toBe('done');
 
     const registrationStats = await stat(connection.registrationFile);
     expect(registrationStats.isFile()).toBe(true);
@@ -811,5 +877,123 @@ describe('ToolServer', () => {
     const diagnostics = await server.runSelfTest();
     expect(diagnostics.lastSelfTest.status).toBe('failed');
     expect(diagnostics.lastSelfTest.summary).toContain('not listening');
+  });
+
+  it('tracks only external tool calls as active MCP work', async () => {
+    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'agent-browser-tool-server-'));
+    tempDirs.push(storageDir);
+
+    let releaseNavigation!: () => void;
+    const navigationStarted = new Promise<void>((resolve) => {
+      releaseNavigation = () => resolve();
+    });
+    let navigationStartedResolve!: () => void;
+    const navigationEntered = new Promise<void>((resolve) => {
+      navigationStartedResolve = () => resolve();
+    });
+
+    const server = new ToolServer({
+      runtime: {
+        listTabs: () => [],
+        executeNavigationCommand: async (command) => {
+          navigationStartedResolve();
+          await navigationStarted;
+          return {
+            ...createEmptyNavigationState(),
+            url: command.action === 'navigate' ? command.target : '',
+          };
+        },
+        executePickerCommand: async () => createEmptyPickerState(),
+        getPickerState: () => createEmptyPickerState(),
+        executeFeedbackCommand: async () => createEmptyFeedbackState(),
+        getFeedbackState: () => createEmptyFeedbackState(),
+        getMarkdownForCurrentPage: async () => createEmptyMarkdownViewState(),
+        getWindowState: () => ({
+          outerBounds: { x: 0, y: 0, width: 1200, height: 800 },
+          contentBounds: { x: 0, y: 24, width: 1200, height: 776 },
+          pageViewportBounds: { x: 0, y: 152, width: 1200, height: 624 },
+          chromeHeight: 152,
+          deviceScaleFactor: 2,
+        }),
+        resizeWindow: async () => ({
+          outerBounds: { x: 0, y: 0, width: 1200, height: 800 },
+          contentBounds: { x: 0, y: 24, width: 1200, height: 776 },
+          pageViewportBounds: { x: 0, y: 152, width: 1200, height: 624 },
+          chromeHeight: 152,
+          deviceScaleFactor: 2,
+        }),
+        captureScreenshot: async () => ({
+          target: 'page',
+          format: 'png',
+          mimeType: 'image/png',
+          data: Buffer.from('fixture'),
+          pixelWidth: 1200,
+          pixelHeight: 624,
+          fileNameHint: 'page',
+        }),
+      },
+      storageDir,
+      port: 0,
+      busyHoldMs: 10,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    });
+
+    const connection = await server.start();
+
+    const pendingNavigate = fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'busy-navigate',
+        method: 'tools/call',
+        params: {
+          name: 'page.navigate',
+          arguments: {
+            target: 'https://slow.example.com',
+          },
+        },
+      }),
+    });
+
+    await navigationEntered;
+    expect(server.getDiagnostics().activeToolCalls).toBe(1);
+    expect(server.getDiagnostics().busySince).not.toBeNull();
+
+    releaseNavigation();
+    const navigateResponse = await pendingNavigate;
+    expect(navigateResponse.status).toBe(200);
+    expect(server.getDiagnostics().activeToolCalls).toBe(0);
+    expect(server.getDiagnostics().busySince).not.toBeNull();
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 25);
+    });
+    expect(server.getDiagnostics().busySince).toBeNull();
+
+    const toolsResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'tools-list',
+        method: 'tools/list',
+      }),
+    });
+    expect(toolsResponse.status).toBe(200);
+    expect(server.getDiagnostics().activeToolCalls).toBe(0);
+    expect(server.getDiagnostics().busySince).toBeNull();
+
+    await server.stop();
   });
 });

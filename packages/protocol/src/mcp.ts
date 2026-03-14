@@ -7,12 +7,14 @@ export const mcpIndicatorColors = ['green', 'yellow', 'red'] as const;
 export const mcpLifecycleStates = ['starting', 'listening', 'stopped', 'error'] as const;
 export const mcpSelfTestStatuses = ['idle', 'running', 'passed', 'failed'] as const;
 export const mcpRequestOutcomes = ['success', 'error', 'rejected'] as const;
+export const mcpAgentActivityPhases = ['acknowledged', 'in_progress', 'done'] as const;
 
 export type McpViewAction = (typeof mcpViewActions)[number];
 export type McpIndicatorColor = (typeof mcpIndicatorColors)[number];
 export type McpLifecycleState = (typeof mcpLifecycleStates)[number];
 export type McpSelfTestStatus = (typeof mcpSelfTestStatuses)[number];
 export type McpRequestOutcome = (typeof mcpRequestOutcomes)[number];
+export type McpAgentActivityPhase = (typeof mcpAgentActivityPhases)[number];
 
 export type McpViewCommand = {
   action: McpViewAction;
@@ -34,6 +36,13 @@ export interface McpSelfTestSummary {
   toolsListOk: boolean | null;
 }
 
+export interface McpAgentActivity {
+  annotationId: string;
+  phase: McpAgentActivityPhase;
+  message: string;
+  updatedAt: string;
+}
+
 export interface McpViewState {
   isOpen: boolean;
   indicator: McpIndicatorColor;
@@ -50,6 +59,10 @@ export interface McpViewState {
   requestCount: number;
   lastRequestAt: string | null;
   recentRequests: McpRecentRequest[];
+  activeToolCalls: number;
+  busySince: string | null;
+  lastBusyAt: string | null;
+  agentActivity: McpAgentActivity | null;
   lastSelfTest: McpSelfTestSummary;
   lastError: string | null;
   lastUpdatedAt: string | null;
@@ -74,6 +87,10 @@ export const createEmptyMcpViewState = (): McpViewState => ({
   requestCount: 0,
   lastRequestAt: null,
   recentRequests: [],
+  activeToolCalls: 0,
+  busySince: null,
+  lastBusyAt: null,
+  agentActivity: null,
   lastSelfTest: {
     status: 'idle',
     checkedAt: null,
@@ -124,6 +141,22 @@ const isMcpSelfTestSummary = (value: unknown): value is McpSelfTestSummary => {
   );
 };
 
+export const isMcpAgentActivityPhase = (value: unknown): value is McpAgentActivityPhase =>
+  typeof value === 'string' && mcpAgentActivityPhases.includes(value as McpAgentActivityPhase);
+
+const isMcpAgentActivity = (value: unknown): value is McpAgentActivity => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.annotationId === 'string' &&
+    isMcpAgentActivityPhase(value.phase) &&
+    typeof value.message === 'string' &&
+    typeof value.updatedAt === 'string'
+  );
+};
+
 export const isMcpViewState = (value: unknown): value is McpViewState => {
   if (!isRecord(value)) {
     return false;
@@ -149,6 +182,10 @@ export const isMcpViewState = (value: unknown): value is McpViewState => {
     (typeof value.lastRequestAt === 'string' || value.lastRequestAt === null) &&
     Array.isArray(value.recentRequests) &&
     value.recentRequests.every(isMcpRecentRequest) &&
+    typeof value.activeToolCalls === 'number' &&
+    (typeof value.busySince === 'string' || value.busySince === null) &&
+    (typeof value.lastBusyAt === 'string' || value.lastBusyAt === null) &&
+    (value.agentActivity === null || isMcpAgentActivity(value.agentActivity)) &&
     isMcpSelfTestSummary(value.lastSelfTest) &&
     (typeof value.lastError === 'string' || value.lastError === null) &&
     (typeof value.lastUpdatedAt === 'string' || value.lastUpdatedAt === null)

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createEmptyNavigationState,
+  isPageAgentOverlayState,
   isNavigationCommand,
   isNavigationState,
 } from '../src/index';
@@ -43,6 +44,55 @@ describe('isNavigationState', () => {
       isNavigationState({
         ...createEmptyNavigationState(),
         isLoading: 'nope',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('isPageAgentOverlayState', () => {
+  it('accepts a valid agent overlay payload', () => {
+    expect(
+      isPageAgentOverlayState({
+        annotationId: 'annotation-1',
+        selection: {
+          selector: '#cta',
+          xpath: '//*[@id="cta"]',
+          tag: 'button',
+          id: 'cta',
+          classList: ['primary'],
+          role: 'button',
+          accessibleName: 'Launch',
+          playwrightLocator: "getByRole('button', { name: 'Launch' })",
+          textSnippet: 'Launch',
+          bbox: {
+            x: 12,
+            y: 18,
+            width: 120,
+            height: 32,
+            devicePixelRatio: 2,
+          },
+          attributes: {
+            role: 'button',
+          },
+          outerHTMLExcerpt: '<button id="cta">Launch</button>',
+          frame: {
+            url: 'https://example.com',
+            isMainFrame: true,
+          },
+        },
+        phase: 'in_progress',
+        message: 'Agent is working on this.',
+        updatedAt: '2026-03-13T21:10:00.000Z',
+        sourceUrl: 'https://example.com',
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects malformed agent overlay payloads', () => {
+    expect(
+      isPageAgentOverlayState({
+        annotationId: 'annotation-1',
+        phase: 'working',
       }),
     ).toBe(false);
   });

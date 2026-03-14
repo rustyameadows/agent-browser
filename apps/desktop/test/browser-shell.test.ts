@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  createEmptyFeedbackState,
   createEmptyMarkdownViewState,
   createEmptyMcpViewState,
 } from '@agent-browser/protocol';
@@ -38,6 +39,13 @@ const createFakePanelView = () => ({
     id: Math.floor(Math.random() * 1000) + 1,
     isDestroyed: () => false,
     send: vi.fn(),
+    getURL: () => 'https://example.com',
+    getTitle: () => 'Example Domain',
+    isLoading: () => false,
+    navigationHistory: {
+      canGoBack: () => false,
+      canGoForward: () => false,
+    },
   },
 });
 
@@ -55,6 +63,8 @@ type BrowserShellHarness = {
   refreshMarkdownView: ReturnType<typeof vi.fn>;
   ensureMcpPanelMounted: ReturnType<typeof vi.fn>;
   ensureMarkdownPanelMounted: ReturnType<typeof vi.fn>;
+  pageView: ReturnType<typeof createFakePanelView> | null;
+  feedbackState: ReturnType<typeof createEmptyFeedbackState>;
   markdownViewState: ReturnType<typeof createEmptyMarkdownViewState>;
   markdownPanelMounted: boolean;
   markdownPanelView: ReturnType<typeof createFakePanelView> | null;
@@ -91,6 +101,15 @@ describe('BrowserShell', () => {
             outcome: 'success',
           },
         ],
+        activeToolCalls: 1,
+        busySince: '2026-03-13T21:09:58.000Z',
+        lastBusyAt: '2026-03-13T21:10:00.000Z',
+        agentActivity: {
+          annotationId: 'annotation-1',
+          phase: 'in_progress',
+          message: 'Agent is working on this.',
+          updatedAt: '2026-03-13T21:10:00.000Z',
+        },
         lastSelfTest: {
           status: 'passed',
           checkedAt: '2026-03-13T21:09:00.000Z',
@@ -117,6 +136,10 @@ describe('BrowserShell', () => {
         requestCount: 0,
         lastRequestAt: null,
         recentRequests: [],
+        activeToolCalls: 0,
+        busySince: null,
+        lastBusyAt: null,
+        agentActivity: null,
         lastSelfTest: {
           status: 'passed',
           checkedAt: '2026-03-13T21:09:00.000Z',
@@ -134,6 +157,7 @@ describe('BrowserShell', () => {
     expect(state.indicator).toBe('green');
     expect(state.authTokenPreview).toBe('25b7...16f3');
     expect(state.tools).toContain('page.navigate');
+    expect(state.agentActivity?.phase).toBe('in_progress');
     expect(subscribe).toHaveBeenCalledTimes(1);
   });
 
@@ -182,5 +206,82 @@ describe('BrowserShell', () => {
     await shell.executeMarkdownViewCommand({ action: 'open' });
     expect(shell.getMcpViewState().isOpen).toBe(false);
     expect(shell.getMarkdownViewState().isOpen).toBe(true);
+  });
+
+  it('emits a page overlay payload for the active agent annotation on the current page', () => {
+    const shell = new BrowserShell();
+    const subject = shell as unknown as BrowserShellHarness;
+    const pageView = createFakePanelView();
+
+    subject.pageView = pageView;
+    subject.feedbackState = {
+      ...createEmptyFeedbackState(),
+      activeAnnotationId: 'annotation-1',
+      annotations: [
+        {
+          id: 'annotation-1',
+          selection: {
+            selector: '#cta',
+            xpath: '//*[@id="cta"]',
+            tag: 'button',
+            id: 'cta',
+            classList: ['primary'],
+            role: 'button',
+            accessibleName: 'Launch',
+            playwrightLocator: "getByRole('button', { name: 'Launch' })",
+            textSnippet: 'Launch',
+            bbox: {
+              x: 8,
+              y: 12,
+              width: 120,
+              height: 32,
+              devicePixelRatio: 2,
+            },
+            attributes: {
+              role: 'button',
+            },
+            outerHTMLExcerpt: '<button id="cta">Launch</button>',
+            frame: {
+              url: 'https://example.com',
+              isMainFrame: true,
+            },
+          },
+          summary: 'Button copy is vague',
+          note: 'Tighten the CTA.',
+          kind: 'change',
+          priority: 'medium',
+          status: 'in_progress',
+          createdAt: '2026-03-14T00:00:00.000Z',
+          updatedAt: '2026-03-14T00:00:01.000Z',
+          url: 'https://example.com',
+          pageTitle: 'Example Domain',
+          replies: [],
+        },
+      ],
+      lastUpdatedAt: '2026-03-14T00:00:01.000Z',
+    };
+    subject.mcpViewState = {
+      ...createEmptyMcpViewState(),
+      agentActivity: {
+        annotationId: 'annotation-1',
+        phase: 'in_progress',
+        message: 'Agent is working on this.',
+        updatedAt: '2026-03-14T00:00:01.000Z',
+      },
+    };
+
+    const internalShell = shell as unknown as {
+      sendPageAgentOverlay(): void;
+    };
+    internalShell.sendPageAgentOverlay();
+
+    expect(pageView.webContents.send).toHaveBeenCalledWith(
+      'page-agent:overlay',
+      expect.objectContaining({
+        annotationId: 'annotation-1',
+        phase: 'in_progress',
+        message: 'Agent is working on this.',
+      }),
+    );
   });
 });

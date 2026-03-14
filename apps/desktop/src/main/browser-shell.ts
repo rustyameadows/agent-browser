@@ -30,6 +30,7 @@ import {
   NAVIGATION_COMMAND_CHANNEL,
   NAVIGATION_GET_STATE_CHANNEL,
   NAVIGATION_STATE_CHANNEL,
+  PAGE_AGENT_OVERLAY_CHANNEL,
   PAGE_PICKER_CONTROL_CHANNEL,
   PAGE_PICKER_EVENT_CHANNEL,
   PICKER_COMMAND_CHANNEL,
@@ -57,6 +58,7 @@ import {
   type MarkdownViewState,
   type NavigationCommand,
   type NavigationState,
+  type PageAgentOverlayState,
   type PickerCommand,
   type PickerState,
 } from '@agent-browser/protocol';
@@ -76,6 +78,7 @@ import {
 import { fixtureFileUrl, isSafeExternalUrl, normalizeAddress } from './url';
 
 export const PRIMARY_TAB_ID = 'tab-1';
+const AGENT_DONE_PULSE_MS = 1600;
 
 type TrustedSurface = 'chrome' | 'markdown' | 'mcp' | 'feedback';
 
@@ -254,6 +257,7 @@ export class BrowserShell {
       ...this.mcpViewState,
       tools: [...this.mcpViewState.tools],
       recentRequests: this.mcpViewState.recentRequests.map((entry) => ({ ...entry })),
+      agentActivity: this.mcpViewState.agentActivity ? { ...this.mcpViewState.agentActivity } : null,
       lastSelfTest: { ...this.mcpViewState.lastSelfTest },
     };
   }
@@ -1588,6 +1592,7 @@ export class BrowserShell {
 
   private sendNavigationState(): void {
     this.sendToTrustedViews(NAVIGATION_STATE_CHANNEL, this.createNavigationState());
+    this.sendPageAgentOverlay();
   }
 
   private sendPickerState(): void {
@@ -1596,6 +1601,7 @@ export class BrowserShell {
 
   private sendFeedbackState(): void {
     this.sendToTrustedViews(FEEDBACK_STATE_CHANNEL, this.getFeedbackState());
+    this.sendPageAgentOverlay();
   }
 
   private sendMarkdownViewState(): void {
@@ -1604,6 +1610,15 @@ export class BrowserShell {
 
   private sendMcpViewState(): void {
     this.sendToTrustedViews(MCP_VIEW_STATE_CHANNEL, this.getMcpViewState());
+    this.sendPageAgentOverlay();
+  }
+
+  private sendPageAgentOverlay(): void {
+    if (!this.pageView || this.pageView.webContents.isDestroyed()) {
+      return;
+    }
+
+    this.pageView.webContents.send(PAGE_AGENT_OVERLAY_CHANNEL, this.getPageAgentOverlayState());
   }
 
   private sendToTrustedViews(channel: string, payload: unknown): void {
@@ -1652,5 +1667,36 @@ export class BrowserShell {
     }
 
     webContents.openDevTools({ mode: 'detach', activate: true });
+  }
+
+  private getPageAgentOverlayState(): PageAgentOverlayState | null {
+    const agentActivity = this.mcpViewState.agentActivity;
+    if (!agentActivity) {
+      return null;
+    }
+
+    if (
+      agentActivity.phase === 'done' &&
+      Date.now() - new Date(agentActivity.updatedAt).getTime() > AGENT_DONE_PULSE_MS
+    ) {
+      return null;
+    }
+
+    const annotation = this.feedbackState.annotations.find(
+      (entry) => entry.id === agentActivity.annotationId,
+    );
+    const navigationState = this.createNavigationState();
+    if (!annotation || annotation.url !== navigationState.url) {
+      return null;
+    }
+
+    return {
+      annotationId: annotation.id,
+      selection: { ...annotation.selection },
+      phase: agentActivity.phase,
+      message: agentActivity.message,
+      updatedAt: agentActivity.updatedAt,
+      sourceUrl: annotation.url,
+    };
   }
 }

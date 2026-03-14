@@ -6,7 +6,10 @@ import path from 'node:path';
 import type {
   ArtifactRecord,
   FeedbackCommand,
+  FeedbackStatus,
   FeedbackState,
+  McpAgentActivity,
+  McpAgentActivityPhase,
   McpRecentRequest,
   McpRequestOutcome,
   McpSelfTestSummary,
@@ -86,6 +89,10 @@ export interface ToolServerDiagnosticsSnapshot {
   requestCount: number;
   lastRequestAt: string | null;
   recentRequests: McpRecentRequest[];
+  activeToolCalls: number;
+  busySince: string | null;
+  lastBusyAt: string | null;
+  agentActivity: McpAgentActivity | null;
   lastSelfTest: McpSelfTestSummary;
   lastError: string | null;
   lastUpdatedAt: string | null;
@@ -100,6 +107,19 @@ type ToolDefinition = {
 const SERVER_NAME = 'agent-browser';
 const SERVER_VERSION = '0.1.0';
 const RECENT_REQUEST_LIMIT = 10;
+const DEFAULT_BUSY_HOLD_MS = 900;
+
+const PROGRESS_STATUS_BY_PHASE: Record<McpAgentActivityPhase, FeedbackStatus> = {
+  acknowledged: 'acknowledged',
+  in_progress: 'in_progress',
+  done: 'resolved',
+};
+
+const DEFAULT_PROGRESS_MESSAGE: Record<McpAgentActivityPhase, string> = {
+  acknowledged: 'Agent received this note.',
+  in_progress: 'Agent is working on this.',
+  done: 'Agent marked this complete.',
+};
 
 const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
@@ -120,6 +140,15 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         target: { type: 'string' },
       },
       required: ['target'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'page.reload',
+    description: 'Reload the active tab.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
       additionalProperties: false,
     },
   },
@@ -207,6 +236,23 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
       },
       required: ['annotationId', 'body'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'feedback.progress',
+    description: 'Record agent progress for an annotation and sync feedback status.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        annotationId: { type: 'string' },
+        phase: {
+          type: 'string',
+          enum: ['acknowledged', 'in_progress', 'done'],
+        },
+        message: { type: 'string' },
+      },
+      required: ['annotationId', 'phase'],
       additionalProperties: false,
     },
   },
@@ -393,6 +439,9 @@ const cloneRecentRequests = (recentRequests: McpRecentRequest[]): McpRecentReque
 
 const cloneSelfTest = (summary: McpSelfTestSummary): McpSelfTestSummary => ({ ...summary });
 
+const cloneAgentActivity = (activity: McpAgentActivity | null): McpAgentActivity | null =>
+  activity ? { ...activity } : null;
+
 const nowIso = (): string => new Date().toISOString();
 
 export class ToolServer {
@@ -400,6 +449,7 @@ export class ToolServer {
   private readonly storageDir: string;
   private readonly host: string;
   private readonly port: number;
+  private readonly busyHoldMs: number;
   private readonly logger: Pick<Console, 'error' | 'info' | 'warn'>;
   private readonly artifactStore: ArtifactStore;
   private readonly diagnosticsListeners = new Set<
@@ -408,18 +458,21 @@ export class ToolServer {
   private server: http.Server | null = null;
   private connectionInfo: ToolServerConnectionInfo | null = null;
   private diagnostics: ToolServerDiagnosticsSnapshot;
+  private busyReleaseTimer: NodeJS.Timeout | null = null;
 
   constructor(options: {
     runtime: ToolServerRuntime;
     storageDir: string;
     host?: string;
     port?: number;
+    busyHoldMs?: number;
     logger?: Pick<Console, 'error' | 'info' | 'warn'>;
   }) {
     this.runtime = options.runtime;
     this.storageDir = options.storageDir;
     this.host = options.host ?? '127.0.0.1';
     this.port = options.port ?? DEFAULT_TOOL_SERVER_PORT;
+    this.busyHoldMs = options.busyHoldMs ?? DEFAULT_BUSY_HOLD_MS;
     this.logger = options.logger ?? console;
     this.artifactStore = new ArtifactStore(this.storageDir);
     this.diagnostics = {
@@ -433,6 +486,10 @@ export class ToolServer {
       requestCount: 0,
       lastRequestAt: null,
       recentRequests: [],
+      activeToolCalls: 0,
+      busySince: null,
+      lastBusyAt: null,
+      agentActivity: null,
       lastSelfTest: cloneSelfTest(EMPTY_SELF_TEST),
       lastError: null,
       lastUpdatedAt: nowIso(),
@@ -531,12 +588,15 @@ export class ToolServer {
 
   async stop(): Promise<void> {
     this.connectionInfo = null;
+    this.clearBusyReleaseTimer();
 
     if (!this.server) {
       this.updateDiagnostics({
         lifecycle: 'stopped',
         url: null,
         port: this.port > 0 ? this.port : null,
+        activeToolCalls: 0,
+        busySince: null,
       });
       return;
     }
@@ -557,6 +617,8 @@ export class ToolServer {
       lifecycle: 'stopped',
       url: null,
       port: this.port > 0 ? this.port : null,
+      activeToolCalls: 0,
+      busySince: null,
     });
   }
 
@@ -798,6 +860,11 @@ export class ToolServer {
 
     const requestId = requestPayload.id ?? null;
     const requestMeta = describeRequest(requestPayload.method, requestPayload.params);
+    const isExternalToolCall = requestPayload.method === 'tools/call';
+
+    if (isExternalToolCall) {
+      this.beginExternalToolCall();
+    }
 
     try {
       const result = await this.dispatch(requestPayload.method, requestPayload.params);
@@ -814,6 +881,10 @@ export class ToolServer {
         lastError: message,
       });
       this.recordRequest(requestMeta.method, requestMeta.detail, 'error');
+    } finally {
+      if (isExternalToolCall) {
+        this.finishExternalToolCall();
+      }
     }
   }
 
@@ -862,6 +933,12 @@ export class ToolServer {
           navigation: await this.runtime.executeNavigationCommand({
             action: 'navigate',
             target: args.target,
+          }),
+        });
+      case 'page.reload':
+        return toolResult({
+          navigation: await this.runtime.executeNavigationCommand({
+            action: 'reload',
           }),
         });
       case 'picker.enable':
@@ -943,6 +1020,64 @@ export class ToolServer {
                 : 'agent',
           }),
         });
+      case 'feedback.progress': {
+        if (typeof args.annotationId !== 'string' || args.annotationId.trim().length === 0) {
+          throw new Error('feedback.progress requires a non-empty annotationId.');
+        }
+
+        if (
+          args.phase !== 'acknowledged' &&
+          args.phase !== 'in_progress' &&
+          args.phase !== 'done'
+        ) {
+          throw new Error('feedback.progress requires a valid phase.');
+        }
+
+        const currentState = this.runtime.getFeedbackState();
+        const annotation = currentState.annotations.find(
+          (entry) => entry.id === args.annotationId,
+        );
+
+        if (!annotation) {
+          throw new Error(`feedback.progress could not find annotation ${args.annotationId}.`);
+        }
+
+        const phase = args.phase;
+        const message =
+          typeof args.message === 'string' && args.message.trim().length > 0
+            ? args.message.trim()
+            : DEFAULT_PROGRESS_MESSAGE[phase];
+
+        await this.runtime.executeFeedbackCommand({
+          action: 'setStatus',
+          annotationId: annotation.id,
+          status: PROGRESS_STATUS_BY_PHASE[phase],
+        });
+        const feedback = await this.runtime.executeFeedbackCommand({
+          action: 'reply',
+          annotationId: annotation.id,
+          body: message,
+          author: 'agent',
+        });
+        const updatedAt = nowIso();
+        const agentActivity = {
+          annotationId: annotation.id,
+          phase,
+          message,
+          updatedAt,
+        } satisfies McpAgentActivity;
+
+        this.updateDiagnostics({
+          agentActivity,
+        });
+
+        return toolResult({
+          feedback,
+          annotation:
+            feedback.annotations.find((entry) => entry.id === annotation.id) ?? null,
+          agentActivity,
+        });
+      }
       case 'feedback.setStatus':
         if (typeof args.annotationId !== 'string' || args.annotationId.trim().length === 0) {
           throw new Error('feedback.setStatus requires a non-empty annotationId.');
@@ -1102,6 +1237,7 @@ export class ToolServer {
     return {
       ...this.diagnostics,
       recentRequests: cloneRecentRequests(this.diagnostics.recentRequests),
+      agentActivity: cloneAgentActivity(this.diagnostics.agentActivity),
       lastSelfTest: cloneSelfTest(this.diagnostics.lastSelfTest),
     };
   }
@@ -1118,6 +1254,10 @@ export class ToolServer {
       recentRequests: patch.recentRequests
         ? cloneRecentRequests(patch.recentRequests)
         : this.diagnostics.recentRequests,
+      agentActivity:
+        'agentActivity' in patch
+          ? cloneAgentActivity(patch.agentActivity ?? null)
+          : this.diagnostics.agentActivity,
       lastSelfTest: patch.lastSelfTest
         ? cloneSelfTest(patch.lastSelfTest)
         : this.diagnostics.lastSelfTest,
@@ -1128,6 +1268,49 @@ export class ToolServer {
     for (const listener of this.diagnosticsListeners) {
       listener(snapshot);
     }
+  }
+
+  private beginExternalToolCall(): void {
+    this.clearBusyReleaseTimer();
+    const at = nowIso();
+    this.updateDiagnostics({
+      activeToolCalls: this.diagnostics.activeToolCalls + 1,
+      busySince: this.diagnostics.busySince ?? at,
+      lastBusyAt: at,
+    });
+  }
+
+  private finishExternalToolCall(): void {
+    const at = nowIso();
+    const activeToolCalls = Math.max(this.diagnostics.activeToolCalls - 1, 0);
+
+    this.updateDiagnostics({
+      activeToolCalls,
+      lastBusyAt: at,
+    });
+
+    if (activeToolCalls > 0) {
+      return;
+    }
+
+    this.clearBusyReleaseTimer();
+    this.busyReleaseTimer = setTimeout(() => {
+      this.busyReleaseTimer = null;
+      if (this.diagnostics.activeToolCalls === 0) {
+        this.updateDiagnostics({
+          busySince: null,
+        });
+      }
+    }, this.busyHoldMs);
+  }
+
+  private clearBusyReleaseTimer(): void {
+    if (!this.busyReleaseTimer) {
+      return;
+    }
+
+    clearTimeout(this.busyReleaseTimer);
+    this.busyReleaseTimer = null;
   }
 
   private async loadOrCreateToken(): Promise<string> {

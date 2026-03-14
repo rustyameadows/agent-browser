@@ -15,6 +15,15 @@ describe('mapDiagnosticsToMcpViewState', () => {
         requestCount: 1,
         lastRequestAt: '2026-03-13T21:10:00.000Z',
         recentRequests: [],
+        activeToolCalls: 1,
+        busySince: '2026-03-13T21:09:58.000Z',
+        lastBusyAt: '2026-03-13T21:10:00.000Z',
+        agentActivity: {
+          annotationId: 'annotation-1',
+          phase: 'in_progress',
+          message: 'Agent is working on this.',
+          updatedAt: '2026-03-13T21:10:00.000Z',
+        },
         lastSelfTest: {
           status: 'passed',
           checkedAt: '2026-03-13T21:09:00.000Z',
@@ -33,6 +42,8 @@ describe('mapDiagnosticsToMcpViewState', () => {
     expect(state.indicator).toBe('green');
     expect(state.statusLabel).toBe('MCP server verified.');
     expect(state.authTokenPreview).toBe('25b7...16f3');
+    expect(state.activeToolCalls).toBe(1);
+    expect(state.agentActivity?.phase).toBe('in_progress');
   });
 
   it('maps a failed self-test to a red UI state', () => {
@@ -48,6 +59,10 @@ describe('mapDiagnosticsToMcpViewState', () => {
         requestCount: 0,
         lastRequestAt: null,
         recentRequests: [],
+        activeToolCalls: 0,
+        busySince: null,
+        lastBusyAt: null,
+        agentActivity: null,
         lastSelfTest: {
           status: 'failed',
           checkedAt: '2026-03-13T21:09:00.000Z',

@@ -27,6 +27,7 @@ const emptyFeedbackState = createEmptyFeedbackState();
 const emptyMarkdownState = createEmptyMarkdownViewState();
 const emptyMcpState = createEmptyMcpViewState();
 const stubTabs = ['Agent Chat', 'Inspector'];
+const AGENT_DONE_PULSE_MS = 1600;
 
 type SurfaceMode = 'chrome' | 'markdown' | 'mcp' | 'feedback';
 
@@ -144,9 +145,9 @@ const getFeedbackStatusTone = (
 ): 'neutral' | 'blue' | 'green' | 'red' | 'gold' => {
   switch (status) {
     case 'acknowledged':
-      return 'blue';
-    case 'in_progress':
       return 'gold';
+    case 'in_progress':
+      return 'blue';
     case 'resolved':
       return 'green';
     case 'dismissed':
@@ -270,6 +271,32 @@ const getMcpIndicatorLabel = (state: McpViewState): string => {
     default:
       return 'Checking';
   }
+};
+
+const getAgentActivityFallback = (
+  phase: NonNullable<McpViewState['agentActivity']>['phase'],
+): string => {
+  switch (phase) {
+    case 'acknowledged':
+      return 'Agent received this note.';
+    case 'done':
+      return 'Agent marked this complete.';
+    case 'in_progress':
+    default:
+      return 'Agent is working on this.';
+  }
+};
+
+const getMcpPresenceMessage = (state: McpViewState): string | null => {
+  if (state.agentActivity) {
+    return state.agentActivity.message || getAgentActivityFallback(state.agentActivity.phase);
+  }
+
+  if (state.activeToolCalls > 0 || state.busySince) {
+    return 'Agent working via MCP.';
+  }
+
+  return null;
 };
 
 const ChromeIcon = ({
@@ -603,12 +630,59 @@ const useMcpViewState = (): McpViewState => {
   return mcpViewState;
 };
 
+const useMcpPresence = (
+  mcpViewState: McpViewState,
+): {
+  isBusy: boolean;
+  isDonePulse: boolean;
+  message: string | null;
+} => {
+  const [isDonePulse, setIsDonePulse] = useState(false);
+
+  useEffect(() => {
+    if (!mcpViewState.agentActivity || mcpViewState.agentActivity.phase !== 'done') {
+      setIsDonePulse(false);
+      return;
+    }
+
+    const elapsed = Math.max(
+      Date.now() - new Date(mcpViewState.agentActivity.updatedAt).getTime(),
+      0,
+    );
+    if (elapsed >= AGENT_DONE_PULSE_MS) {
+      setIsDonePulse(false);
+      return;
+    }
+
+    setIsDonePulse(true);
+    const timeout = window.setTimeout(() => {
+      setIsDonePulse(false);
+    }, AGENT_DONE_PULSE_MS - elapsed);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [mcpViewState.agentActivity]);
+
+  const isBusy = mcpViewState.activeToolCalls > 0 || mcpViewState.busySince !== null;
+  const message =
+    isBusy && mcpViewState.agentActivity?.phase === 'done'
+      ? 'Agent working via MCP.'
+      : getMcpPresenceMessage(mcpViewState);
+  return {
+    isBusy,
+    isDonePulse: !isBusy && isDonePulse,
+    message,
+  };
+};
+
 const ChromeSurface = (): JSX.Element => {
   const navigationState = useNavigationState();
   const pickerState = usePickerState();
   const feedbackState = useFeedbackState();
   const markdownViewState = useMarkdownViewState();
   const mcpViewState = useMcpViewState();
+  const mcpPresence = useMcpPresence(mcpViewState);
   const [draftUrl, setDraftUrl] = useState('');
   const [isEditingAddress, setIsEditingAddress] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState('Copy JSON');
@@ -677,7 +751,6 @@ const ChromeSurface = (): JSX.Element => {
   };
 
   const activeTabLabel = getActiveTabLabel(navigationState);
-  const diagnosticLabel = navigationState.lastError ?? getQuietStatus(navigationState);
   const locationIcon = getLocationIcon(navigationState.url);
   const selection = pickerState.lastSelection;
   const draftSelection = feedbackState.draft.selection;
@@ -693,6 +766,8 @@ const ChromeSurface = (): JSX.Element => {
       ? `Draft ready for ${getSelectionHeading(draftSelection)}`
       : selection
         ? getSelectionHeading(selection)
+      : activeAnnotation
+        ? getSelectionHeading(activeAnnotation.selection)
       : 'DOM picker ready';
   const inspectorMeta = pickerState.enabled
     ? 'Click any element in the page, or press Esc to cancel.'
@@ -700,11 +775,34 @@ const ChromeSurface = (): JSX.Element => {
       ? 'Add context, classify the issue, and let the agent respond in the feedback panel.'
       : selection
         ? getSelectionMeta(selection)
+      : activeAnnotation
+        ? `${getSelectionMeta(activeAnnotation.selection)} | ${
+            mcpPresence.message ?? getFeedbackStatusLabel(activeAnnotation.status)
+          }`
       : 'Use the crosshair button or View > Toggle Pick Mode.';
+  const diagnosticLabel =
+    navigationState.lastError ??
+    (mcpPresence.isBusy || mcpPresence.isDonePulse
+      ? mcpPresence.message ?? 'Agent working via MCP.'
+      : getQuietStatus(navigationState));
+  const mcpButtonLabel = mcpPresence.isBusy
+    ? 'Agent Working'
+    : mcpPresence.isDonePulse
+      ? 'Agent Updated'
+      : 'MCP Status';
+  const mcpButtonAriaLabel = mcpPresence.isBusy
+    ? `Agent working via MCP${mcpPresence.message ? `: ${mcpPresence.message}` : ''}`
+    : mcpPresence.isDonePulse
+      ? `Agent update complete${mcpPresence.message ? `: ${mcpPresence.message}` : ''}`
+      : `MCP status: ${mcpViewState.statusLabel}`;
 
   return (
     <main className="shell">
-      <section className="shell__panel">
+      <section
+        className={`shell__panel${
+          mcpPresence.isBusy ? ' shell__panel--busy' : ''
+        }${mcpPresence.isDonePulse ? ' shell__panel--done' : ''}`}
+      >
         <div className="shell__tabstrip">
           <div className="shell__tabRail">
             <div aria-hidden="true" className="shell__newTab">
@@ -853,24 +951,28 @@ const ChromeSurface = (): JSX.Element => {
               <span>View as MD</span>
             </button>
             <button
-              aria-label={`MCP status: ${mcpViewState.statusLabel}`}
+              aria-label={mcpButtonAriaLabel}
               aria-pressed={mcpViewState.isOpen}
               className={`shell__pillButton shell__pillButton--mcp${
                 mcpViewState.isOpen ? ' shell__pillButton--mcpActive' : ''
+              }${mcpPresence.isBusy ? ' shell__pillButton--mcpBusy' : ''}${
+                mcpPresence.isDonePulse ? ' shell__pillButton--mcpDone' : ''
               }`}
               onClick={() =>
                 void runMcpCommand({
                   action: mcpViewState.isOpen ? 'close' : 'open',
                 })
               }
-              title={mcpViewState.statusLabel}
+              title={mcpPresence.message ?? mcpViewState.statusLabel}
               type="button"
             >
               <span
                 aria-hidden="true"
-                className={`shell__statusDot shell__statusDot--${mcpViewState.indicator}`}
+                className={`shell__statusDot shell__statusDot--${mcpViewState.indicator}${
+                  mcpPresence.isBusy ? ' shell__statusDot--busy' : ''
+                }${mcpPresence.isDonePulse ? ' shell__statusDot--done' : ''}`}
               />
-              <span>MCP Status</span>
+              <span>{mcpButtonLabel}</span>
             </button>
             <button aria-label="Load address" className="shell__goButton" type="submit">
               <ChromeIcon className="shell__icon" name="arrowUpRight" />
@@ -889,7 +991,7 @@ const ChromeSurface = (): JSX.Element => {
         <div
           className={`shell__selectionBar${
             pickerState.enabled ? ' shell__selectionBar--armed' : ''
-          }${selection || draftSelection ? ' shell__selectionBar--filled' : ''}`}
+          }${selection || draftSelection || activeAnnotation ? ' shell__selectionBar--filled' : ''}`}
         >
           <div className="shell__selectionCopy">
             <div className="shell__selectionTitle">{inspectorHeading}</div>
@@ -1042,6 +1144,7 @@ const MarkdownSurface = (): JSX.Element => {
 
 const McpSurface = (): JSX.Element => {
   const mcpViewState = useMcpViewState();
+  const mcpPresence = useMcpPresence(mcpViewState);
 
   const runMcpCommand = async (command: McpViewCommand): Promise<void> => {
     await window.agentBrowser.executeMcpView(command);
@@ -1136,6 +1239,29 @@ const McpSurface = (): JSX.Element => {
                   {tool}
                 </span>
               ))}
+            </div>
+          </section>
+
+          <section className="mcpSurface__section">
+            <div className="mcpSurface__sectionHeader">
+              <div className="mcpSurface__sectionTitle">Live Activity</div>
+              <div className="mcpSurface__sectionMeta">
+                {mcpViewState.activeToolCalls} active tool{mcpViewState.activeToolCalls === 1 ? '' : 's'}
+              </div>
+            </div>
+            <div className="mcpSurface__activitySummary">
+              {mcpPresence.message ?? 'No active agent workflow.'}
+            </div>
+            <div className="mcpSurface__debugGrid">
+              <div className="mcpSurface__debugChip">
+                Busy since: {formatTimestamp(mcpViewState.busySince)}
+              </div>
+              <div className="mcpSurface__debugChip">
+                Last busy: {formatTimestamp(mcpViewState.lastBusyAt)}
+              </div>
+              <div className="mcpSurface__debugChip">
+                Annotation: {mcpViewState.agentActivity?.annotationId ?? 'None'}
+              </div>
             </div>
           </section>
 
