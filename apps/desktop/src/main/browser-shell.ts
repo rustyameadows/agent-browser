@@ -19,7 +19,7 @@ import {
 } from '@agent-browser/protocol';
 import { fixtureFileUrl, isSafeExternalUrl, normalizeAddress } from './url';
 
-const CHROME_HEIGHT = 176;
+const CHROME_HEIGHT = 122;
 
 export class BrowserShell {
   private window: BaseWindow | null = null;
@@ -43,7 +43,7 @@ export class BrowserShell {
       minWidth: 980,
       minHeight: 720,
       title: 'Agent Browser',
-      backgroundColor: '#081321',
+      backgroundColor: '#edf0f4',
       titleBarStyle: 'hiddenInset',
     });
 
