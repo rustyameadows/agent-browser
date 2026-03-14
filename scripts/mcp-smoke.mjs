@@ -455,7 +455,7 @@ const run = async () => {
     )
     assert(
       markdown.body?.result?.structuredContent?.markdown?.includes(
-        'Your local launchpad is up, humming, and ready for the next move.',
+        'Your local launchpad is ready.',
       ),
       'page.viewAsMarkdown did not contain the expected fixture Markdown.',
     )

@@ -55,7 +55,7 @@
         gap: 0.45rem;
         margin-bottom: 18px;
         padding: 0.45rem 0.8rem;
-        border-radius: 999px;
+        border-radius: 0;
         font-size: 0.8rem;
         font-weight: 700;
         letter-spacing: 0.08em;
@@ -68,6 +68,10 @@
       .lead {
         max-width: 62ch;
         font-size: 1.05rem;
+      }
+
+      .lead code {
+        font-size: 0.88em;
       }
 
       .cards {
@@ -97,7 +101,7 @@
   <body>
     <main>
       <div class="eyebrow">Fixture Ready</div>
-      <h1>Your local launchpad is up, humming, and ready for the next move.</h1>
+      <h1>Your local launchpad is ready.</h1>
       <p class="lead">
         This page ships with the repo so the first launch exercises a <code>file://</code> navigation before
         you wire in tabs, agents, or Playwright.
@@ -113,6 +117,27 @@
           <p>
             <a href="https://example.com" target="_blank" rel="noreferrer">Open a remote popup test</a>
             to verify that in-app popups are denied and plain web URLs open externally.
+          </p>
+        </section>
+        <section class="card">
+          <strong>Markdown capture</strong>
+          <p>
+            Use the page markdown tool to confirm headings, inline <code>code</code>, and links all survive the
+            first fixture pass.
+          </p>
+        </section>
+        <section class="card">
+          <strong>Resize behavior</strong>
+          <p>
+            Stretch the window wide, then narrow, and make sure the layout keeps its rhythm without collapsing the
+            reading line too aggressively.
+          </p>
+        </section>
+        <section class="card">
+          <strong>Feedback loop</strong>
+          <p>
+            Leave a note against any block on the page, then verify it can move from open to in progress to resolved
+            without losing the page context.
           </p>
         </section>
       </div>

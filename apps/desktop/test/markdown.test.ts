@@ -12,7 +12,7 @@ describe('extractMarkdownFromHtml', () => {
     });
 
     expect(result.title).toBe('Agent Browser Fixture');
-    expect(result.markdown).toContain('## Your local launchpad is up, humming, and ready for the next move.');
+    expect(result.markdown).toContain('## Your local launchpad is ready.');
     expect(result.markdown).toContain('**Remote navigation**');
     expect(result.wordCount).toBeGreaterThan(10);
   });
