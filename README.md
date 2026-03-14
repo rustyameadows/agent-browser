@@ -20,7 +20,9 @@ The desktop shell opens a checked-in `file://` fixture on first launch. Replace 
 
 The chrome also includes a DOM pick mode. Use the crosshair button or `View > Toggle Pick Mode`, then click any page element to capture a structured descriptor. The selected descriptor stays in the trusted chrome until you clear it, and the JSON can be copied directly from the inspector strip.
 
-While the app is running, the main process also starts a localhost JSON-RPC tool server at `127.0.0.1`. The current registration manifest is written to `~/Library/Application Support/Agent Browser/mcp-registration.json` on macOS and includes the URL plus bearer token header needed by local tool clients.
+The top toolbar now also includes `View as MD`. That button opens a dedicated trusted Markdown panel beside the page view, snapshots the active page DOM in the main process, converts it with Defuddle, and exposes the raw Markdown plus page metadata. Use the panel actions to copy or refresh the extracted Markdown for the current page.
+
+While the app is running, the main process also starts a localhost JSON-RPC tool server at `127.0.0.1`. The current registration manifest is written to `~/Library/Application Support/Agent Browser/mcp-registration.json` on macOS and includes the URL plus bearer token header needed by local tool clients. The current tool set includes `browser.listTabs`, `page.navigate`, `picker.enable`, `picker.disable`, `picker.lastSelection`, and `page.viewAsMarkdown`.
 
 ## CI Builds
 

@@ -1,3 +1,5 @@
+import type { MarkdownViewCommand, MarkdownViewState } from './markdown';
+
 export const NAVIGATION_COMMAND_CHANNEL = 'navigation:command';
 export const NAVIGATION_GET_STATE_CHANNEL = 'navigation:get-state';
 export const NAVIGATION_STATE_CHANNEL = 'navigation:state';
@@ -90,6 +92,9 @@ export interface NavigationBridge {
   executePicker(command: PickerCommand): Promise<PickerState>;
   getPickerState(): Promise<PickerState>;
   subscribePicker(listener: (state: PickerState) => void): () => void;
+  executeMarkdownView(command: MarkdownViewCommand): Promise<MarkdownViewState>;
+  getMarkdownViewState(): Promise<MarkdownViewState>;
+  subscribeMarkdownView(listener: (state: MarkdownViewState) => void): () => void;
   copyText(value: string): void;
 }
 

@@ -53,6 +53,11 @@ export const installAppMenu = (browserShell: BrowserShell): void => {
       accelerator: 'Alt+CmdOrCtrl+P',
       click: () => browserShell.togglePicker(),
     },
+    {
+      label: 'Toggle Markdown View',
+      accelerator: 'Alt+CmdOrCtrl+M',
+      click: () => browserShell.toggleMarkdownView(),
+    },
     { type: 'separator' },
     { role: 'resetZoom' },
     { role: 'zoomIn' },

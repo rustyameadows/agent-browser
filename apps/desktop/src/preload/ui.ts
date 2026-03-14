@@ -1,11 +1,16 @@
 import { clipboard, contextBridge, ipcRenderer } from 'electron';
 import {
+  MARKDOWN_VIEW_COMMAND_CHANNEL,
+  MARKDOWN_VIEW_GET_STATE_CHANNEL,
+  MARKDOWN_VIEW_STATE_CHANNEL,
   NAVIGATION_COMMAND_CHANNEL,
   NAVIGATION_GET_STATE_CHANNEL,
   NAVIGATION_STATE_CHANNEL,
   PICKER_COMMAND_CHANNEL,
   PICKER_GET_STATE_CHANNEL,
   PICKER_STATE_CHANNEL,
+  type MarkdownViewCommand,
+  type MarkdownViewState,
   type NavigationBridge,
   type NavigationCommand,
   type PickerCommand,
@@ -44,6 +49,25 @@ const navigationBridge: NavigationBridge = {
     ipcRenderer.on(PICKER_STATE_CHANNEL, wrapped);
     return () => {
       ipcRenderer.removeListener(PICKER_STATE_CHANNEL, wrapped);
+    };
+  },
+  executeMarkdownView(command: MarkdownViewCommand): Promise<MarkdownViewState> {
+    return ipcRenderer.invoke(
+      MARKDOWN_VIEW_COMMAND_CHANNEL,
+      command,
+    ) as Promise<MarkdownViewState>;
+  },
+  getMarkdownViewState(): Promise<MarkdownViewState> {
+    return ipcRenderer.invoke(MARKDOWN_VIEW_GET_STATE_CHANNEL) as Promise<MarkdownViewState>;
+  },
+  subscribeMarkdownView(listener: (state: MarkdownViewState) => void): () => void {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: MarkdownViewState): void => {
+      listener(state);
+    };
+
+    ipcRenderer.on(MARKDOWN_VIEW_STATE_CHANNEL, wrapped);
+    return () => {
+      ipcRenderer.removeListener(MARKDOWN_VIEW_STATE_CHANNEL, wrapped);
     };
   },
   copyText(value: string): void {

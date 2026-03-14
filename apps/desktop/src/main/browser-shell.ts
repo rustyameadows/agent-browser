@@ -10,6 +10,9 @@ import {
   shell,
 } from 'electron';
 import {
+  MARKDOWN_VIEW_COMMAND_CHANNEL,
+  MARKDOWN_VIEW_GET_STATE_CHANNEL,
+  MARKDOWN_VIEW_STATE_CHANNEL,
   NAVIGATION_COMMAND_CHANNEL,
   NAVIGATION_GET_STATE_CHANNEL,
   NAVIGATION_STATE_CHANNEL,
@@ -18,20 +21,36 @@ import {
   PICKER_COMMAND_CHANNEL,
   PICKER_GET_STATE_CHANNEL,
   PICKER_STATE_CHANNEL,
+  createEmptyMarkdownViewState,
   createEmptyNavigationState,
   createEmptyPickerState,
+  isMarkdownViewCommand,
   isNavigationCommand,
   isPagePickerEvent,
   isPickerCommand,
+  type MarkdownViewCommand,
+  type MarkdownViewState,
   type NavigationCommand,
   type NavigationState,
   type PickerCommand,
   type PickerState,
 } from '@agent-browser/protocol';
+import { extractMarkdownFromHtml } from './markdown';
 import { fixtureFileUrl, isSafeExternalUrl, normalizeAddress } from './url';
 
 const CHROME_HEIGHT = 152;
+const MARKDOWN_PANEL_WIDTH = 460;
+const MARKDOWN_BREAKPOINT = 1100;
+
 export const PRIMARY_TAB_ID = 'tab-1';
+
+type TrustedSurface = 'chrome' | 'markdown';
+
+type PageMarkupSnapshot = {
+  html: string;
+  title: string;
+  url: string;
+};
 
 export interface BrowserTabSnapshot {
   tabId: string;
@@ -44,8 +63,12 @@ export class BrowserShell {
   private window: BaseWindow | null = null;
   private uiView: WebContentsView | null = null;
   private pageView: WebContentsView | null = null;
+  private markdownPanelView: WebContentsView | null = null;
+  private markdownPanelMounted = false;
   private lastError: string | null = null;
   private pickerState: PickerState = createEmptyPickerState();
+  private markdownViewState: MarkdownViewState = createEmptyMarkdownViewState();
+  private markdownRequestId = 0;
 
   constructor() {
     this.registerIpcHandlers();
@@ -67,14 +90,7 @@ export class BrowserShell {
       titleBarStyle: 'hiddenInset',
     });
 
-    this.uiView = new WebContentsView({
-      webPreferences: {
-        preload: path.join(__dirname, 'ui.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
-
+    this.uiView = this.createTrustedView('chrome');
     this.pageView = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, 'page.js'),
@@ -90,7 +106,6 @@ export class BrowserShell {
     this.attachWindowLifecycle();
     this.attachPageEvents();
     this.attachPopupPolicy();
-    this.loadUi();
     this.layoutViews();
     void this.loadInitialPage();
   }
@@ -100,6 +115,8 @@ export class BrowserShell {
     ipcMain.removeHandler(NAVIGATION_GET_STATE_CHANNEL);
     ipcMain.removeHandler(PICKER_COMMAND_CHANNEL);
     ipcMain.removeHandler(PICKER_GET_STATE_CHANNEL);
+    ipcMain.removeHandler(MARKDOWN_VIEW_COMMAND_CHANNEL);
+    ipcMain.removeHandler(MARKDOWN_VIEW_GET_STATE_CHANNEL);
     ipcMain.removeAllListeners(PAGE_PICKER_EVENT_CHANNEL);
     this.destroyWindow();
   }
@@ -129,13 +146,19 @@ export class BrowserShell {
     void this.executePickerCommand({ action: 'toggle' });
   }
 
+  toggleMarkdownView(): void {
+    void this.executeMarkdownViewCommand({ action: 'toggle' });
+  }
+
   listTabs(): BrowserTabSnapshot[] {
+    const navigationState = this.createNavigationState();
+
     return [
       {
         tabId: PRIMARY_TAB_ID,
-        url: this.createNavigationState().url,
-        title: this.createNavigationState().title,
-        isLoading: this.createNavigationState().isLoading,
+        url: navigationState.url,
+        title: navigationState.title,
+        isLoading: navigationState.isLoading,
       },
     ];
   }
@@ -149,6 +172,10 @@ export class BrowserShell {
 
   getNavigationState(): NavigationState {
     return this.createNavigationState();
+  }
+
+  getMarkdownViewState(): MarkdownViewState {
+    return { ...this.markdownViewState };
   }
 
   async executeNavigationCommand(command: NavigationCommand): Promise<NavigationState> {
@@ -193,17 +220,40 @@ export class BrowserShell {
     return this.getPickerState();
   }
 
+  async executeMarkdownViewCommand(command: MarkdownViewCommand): Promise<MarkdownViewState> {
+    switch (command.action) {
+      case 'open':
+        return this.openMarkdownPanel();
+      case 'close':
+        return this.closeMarkdownPanel();
+      case 'toggle':
+        return this.markdownViewState.isOpen
+          ? this.closeMarkdownPanel()
+          : this.openMarkdownPanel();
+      case 'refresh':
+        return this.refreshMarkdownView(command.force ?? true);
+      default:
+        return this.getMarkdownViewState();
+    }
+  }
+
+  async getMarkdownForCurrentPage(forceRefresh = false): Promise<MarkdownViewState> {
+    return this.refreshMarkdownView(forceRefresh);
+  }
+
   private registerIpcHandlers(): void {
     ipcMain.removeHandler(NAVIGATION_COMMAND_CHANNEL);
     ipcMain.removeHandler(NAVIGATION_GET_STATE_CHANNEL);
     ipcMain.removeHandler(PICKER_COMMAND_CHANNEL);
     ipcMain.removeHandler(PICKER_GET_STATE_CHANNEL);
+    ipcMain.removeHandler(MARKDOWN_VIEW_COMMAND_CHANNEL);
+    ipcMain.removeHandler(MARKDOWN_VIEW_GET_STATE_CHANNEL);
     ipcMain.removeAllListeners(PAGE_PICKER_EVENT_CHANNEL);
 
     ipcMain.handle(
       NAVIGATION_COMMAND_CHANNEL,
       async (event: IpcMainInvokeEvent, payload: unknown): Promise<NavigationState> => {
-        this.assertUiSender(event);
+        this.assertChromeSender(event);
 
         if (!isNavigationCommand(payload)) {
           throw new Error('Invalid navigation command payload.');
@@ -216,7 +266,7 @@ export class BrowserShell {
     ipcMain.handle(
       NAVIGATION_GET_STATE_CHANNEL,
       async (event: IpcMainInvokeEvent): Promise<NavigationState> => {
-        this.assertUiSender(event);
+        this.assertChromeSender(event);
         return this.createNavigationState();
       },
     );
@@ -224,7 +274,7 @@ export class BrowserShell {
     ipcMain.handle(
       PICKER_COMMAND_CHANNEL,
       async (event: IpcMainInvokeEvent, payload: unknown): Promise<PickerState> => {
-        this.assertUiSender(event);
+        this.assertChromeSender(event);
 
         if (!isPickerCommand(payload)) {
           throw new Error('Invalid picker command payload.');
@@ -237,8 +287,29 @@ export class BrowserShell {
     ipcMain.handle(
       PICKER_GET_STATE_CHANNEL,
       async (event: IpcMainInvokeEvent): Promise<PickerState> => {
-        this.assertUiSender(event);
+        this.assertChromeSender(event);
         return this.getPickerState();
+      },
+    );
+
+    ipcMain.handle(
+      MARKDOWN_VIEW_COMMAND_CHANNEL,
+      async (event: IpcMainInvokeEvent, payload: unknown): Promise<MarkdownViewState> => {
+        this.assertTrustedSender(event);
+
+        if (!isMarkdownViewCommand(payload)) {
+          throw new Error('Invalid markdown view command payload.');
+        }
+
+        return this.executeMarkdownViewCommand(payload);
+      },
+    );
+
+    ipcMain.handle(
+      MARKDOWN_VIEW_GET_STATE_CHANNEL,
+      async (event: IpcMainInvokeEvent): Promise<MarkdownViewState> => {
+        this.assertTrustedSender(event);
+        return this.getMarkdownViewState();
       },
     );
 
@@ -267,8 +338,19 @@ export class BrowserShell {
     });
   }
 
-  private assertUiSender(event: IpcMainInvokeEvent): void {
+  private assertChromeSender(event: IpcMainInvokeEvent): void {
     if (!this.uiView || event.sender.id !== this.uiView.webContents.id) {
+      throw new Error('Unauthorized renderer sender.');
+    }
+  }
+
+  private assertTrustedSender(event: IpcMainInvokeEvent): void {
+    const trustedIds = [
+      this.uiView?.webContents.id,
+      this.markdownPanelView?.webContents.id,
+    ].filter((value): value is number => typeof value === 'number');
+
+    if (!trustedIds.includes(event.sender.id)) {
       throw new Error('Unauthorized renderer sender.');
     }
   }
@@ -297,6 +379,7 @@ export class BrowserShell {
     webContents.on('did-start-loading', () => {
       this.lastError = null;
       this.resetPickerOnNavigation();
+      this.invalidateMarkdownCache();
       this.sendNavigationState();
     });
 
@@ -306,6 +389,9 @@ export class BrowserShell {
 
     webContents.on('did-finish-load', () => {
       this.sendNavigationState();
+      if (this.markdownViewState.isOpen) {
+        void this.refreshMarkdownView(true);
+      }
     });
 
     webContents.on('did-navigate', () => {
@@ -321,9 +407,19 @@ export class BrowserShell {
     });
 
     webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl) => {
-      if (errorCode !== -3) {
-        this.lastError = `${errorDescription} (${validatedUrl})`;
-        this.sendNavigationState();
+      if (errorCode === -3) {
+        return;
+      }
+
+      this.lastError = `${errorDescription} (${validatedUrl})`;
+      this.sendNavigationState();
+
+      if (this.markdownViewState.isOpen) {
+        this.setMarkdownError(
+          `Cannot generate Markdown while the page failed to load: ${errorDescription}.`,
+          validatedUrl,
+          this.createNavigationState().title,
+        );
       }
     });
   }
@@ -342,23 +438,38 @@ export class BrowserShell {
     });
   }
 
-  private loadUi(): void {
-    if (!this.uiView) {
-      return;
-    }
-
-    this.uiView.webContents.once('did-finish-load', () => {
-      this.sendNavigationState();
-      this.sendPickerState();
+  private createTrustedView(surface: TrustedSurface): WebContentsView {
+    const view = new WebContentsView({
+      webPreferences: {
+        preload: path.join(__dirname, 'ui.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
     });
 
+    view.webContents.once('did-finish-load', () => {
+      this.sendNavigationState();
+      this.sendPickerState();
+      this.sendMarkdownViewState();
+    });
+
+    this.loadTrustedSurface(view, surface);
+    return view;
+  }
+
+  private loadTrustedSurface(view: WebContentsView, surface: TrustedSurface): void {
     if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-      void this.uiView.webContents.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+      const devUrl = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+      devUrl.searchParams.set('surface', surface);
+      void view.webContents.loadURL(devUrl.toString());
       return;
     }
 
-    void this.uiView.webContents.loadFile(
+    void view.webContents.loadFile(
       path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
+      {
+        query: { surface },
+      },
     );
   }
 
@@ -378,18 +489,64 @@ export class BrowserShell {
     }
 
     const [width, height] = this.window.getContentSize();
+    const contentHeight = Math.max(height - CHROME_HEIGHT, 0);
+
     this.uiView.setBounds({
       x: 0,
       y: 0,
       width,
       height: CHROME_HEIGHT,
     });
+
+    if (this.markdownViewState.isOpen && this.markdownPanelView && this.markdownPanelMounted) {
+      if (width < MARKDOWN_BREAKPOINT) {
+        this.pageView.setBounds({
+          x: 0,
+          y: CHROME_HEIGHT,
+          width: 0,
+          height: 0,
+        });
+        this.markdownPanelView.setBounds({
+          x: 0,
+          y: CHROME_HEIGHT,
+          width,
+          height: contentHeight,
+        });
+        return;
+      }
+
+      const panelWidth = Math.min(MARKDOWN_PANEL_WIDTH, width);
+      const pageWidth = Math.max(width - panelWidth, 0);
+      this.pageView.setBounds({
+        x: 0,
+        y: CHROME_HEIGHT,
+        width: pageWidth,
+        height: contentHeight,
+      });
+      this.markdownPanelView.setBounds({
+        x: pageWidth,
+        y: CHROME_HEIGHT,
+        width: panelWidth,
+        height: contentHeight,
+      });
+      return;
+    }
+
     this.pageView.setBounds({
       x: 0,
       y: CHROME_HEIGHT,
       width,
-      height: Math.max(height - CHROME_HEIGHT, 0),
+      height: contentHeight,
     });
+
+    if (this.markdownPanelView) {
+      this.markdownPanelView.setBounds({
+        x: width,
+        y: CHROME_HEIGHT,
+        width: 0,
+        height: 0,
+      });
+    }
   }
 
   private async executeNavigation(command: NavigationCommand): Promise<NavigationState> {
@@ -441,6 +598,154 @@ export class BrowserShell {
     return this.createNavigationState();
   }
 
+  private async openMarkdownPanel(): Promise<MarkdownViewState> {
+    this.ensureMarkdownPanelMounted();
+
+    this.markdownViewState = {
+      ...this.markdownViewState,
+      isOpen: true,
+      status: this.createNavigationState().isLoading ? 'loading' : this.markdownViewState.status,
+      lastError: this.createNavigationState().isLoading ? null : this.markdownViewState.lastError,
+    };
+    this.layoutViews();
+    this.sendMarkdownViewState();
+
+    return this.refreshMarkdownView(false);
+  }
+
+  private closeMarkdownPanel(): MarkdownViewState {
+    if (this.window && this.markdownPanelView && this.markdownPanelMounted) {
+      this.window.contentView.removeChildView(this.markdownPanelView);
+      this.markdownPanelMounted = false;
+    }
+
+    this.markdownViewState = {
+      ...this.markdownViewState,
+      isOpen: false,
+    };
+    this.layoutViews();
+    this.sendMarkdownViewState();
+    return this.getMarkdownViewState();
+  }
+
+  private ensureMarkdownPanelMounted(): void {
+    if (!this.window) {
+      throw new Error('Window is not ready.');
+    }
+
+    if (!this.markdownPanelView) {
+      this.markdownPanelView = this.createTrustedView('markdown');
+    }
+
+    if (!this.markdownPanelMounted) {
+      this.window.contentView.addChildView(this.markdownPanelView);
+      this.markdownPanelMounted = true;
+    }
+  }
+
+  private async refreshMarkdownView(forceRefresh: boolean): Promise<MarkdownViewState> {
+    if (!this.pageView) {
+      throw new Error('Page view is not ready.');
+    }
+
+    const navigationState = this.createNavigationState();
+    if (!navigationState.url) {
+      this.setMarkdownError('No page is loaded yet.', '', '');
+      return this.getMarkdownViewState();
+    }
+
+    if (
+      !forceRefresh &&
+      this.markdownViewState.status === 'ready' &&
+      this.markdownViewState.sourceUrl === navigationState.url &&
+      this.markdownViewState.markdown.trim().length > 0
+    ) {
+      return this.getMarkdownViewState();
+    }
+
+    if (navigationState.isLoading) {
+      this.markdownViewState = {
+        ...createEmptyMarkdownViewState(),
+        isOpen: this.markdownViewState.isOpen,
+        status: 'loading',
+        sourceUrl: navigationState.url,
+        title: navigationState.title,
+      };
+      this.sendMarkdownViewState();
+      return this.getMarkdownViewState();
+    }
+
+    const requestId = ++this.markdownRequestId;
+
+    this.markdownViewState = {
+      ...createEmptyMarkdownViewState(),
+      isOpen: this.markdownViewState.isOpen,
+      status: 'loading',
+      sourceUrl: navigationState.url,
+      title: navigationState.title,
+    };
+    this.sendMarkdownViewState();
+
+    try {
+      const snapshot = await this.snapshotPageMarkup();
+      const markdownDocument = await extractMarkdownFromHtml({
+        html: snapshot.html,
+        url: snapshot.url || navigationState.url,
+        fallbackTitle: snapshot.title || navigationState.title,
+      });
+
+      if (requestId !== this.markdownRequestId) {
+        return this.getMarkdownViewState();
+      }
+
+      this.markdownViewState = {
+        isOpen: this.markdownViewState.isOpen,
+        status: 'ready',
+        sourceUrl: markdownDocument.url,
+        title: markdownDocument.title,
+        markdown: markdownDocument.markdown,
+        author: markdownDocument.author,
+        site: markdownDocument.site,
+        wordCount: markdownDocument.wordCount,
+        lastError: null,
+      };
+    } catch (error) {
+      if (requestId !== this.markdownRequestId) {
+        return this.getMarkdownViewState();
+      }
+
+      this.setMarkdownError(
+        error instanceof Error ? error.message : 'Markdown generation failed.',
+        navigationState.url,
+        navigationState.title,
+      );
+      return this.getMarkdownViewState();
+    }
+
+    this.sendMarkdownViewState();
+    return this.getMarkdownViewState();
+  }
+
+  private async snapshotPageMarkup(): Promise<PageMarkupSnapshot> {
+    if (!this.pageView) {
+      throw new Error('Page view is not ready.');
+    }
+
+    const snapshot = (await this.pageView.webContents.executeJavaScript(
+      `(() => ({
+        html: document.documentElement ? document.documentElement.outerHTML : '',
+        title: document.title || '',
+        url: location.href || ''
+      }))()`,
+    )) as PageMarkupSnapshot;
+
+    if (!snapshot || typeof snapshot.html !== 'string') {
+      throw new Error('Could not read page markup from the current tab.');
+    }
+
+    return snapshot;
+  }
+
   private createNavigationState(): NavigationState {
     if (!this.pageView) {
       return createEmptyNavigationState();
@@ -472,27 +777,67 @@ export class BrowserShell {
     this.sendPickerState();
   }
 
-  private sendNavigationState(): void {
-    if (!this.uiView || this.uiView.webContents.isDestroyed()) {
+  private invalidateMarkdownCache(): void {
+    this.markdownRequestId += 1;
+
+    if (
+      !this.markdownViewState.isOpen &&
+      this.markdownViewState.status === 'idle' &&
+      this.markdownViewState.markdown.length === 0
+    ) {
       return;
     }
 
-    this.uiView.webContents.send(NAVIGATION_STATE_CHANNEL, this.createNavigationState());
+    this.markdownViewState = {
+      ...createEmptyMarkdownViewState(),
+      isOpen: this.markdownViewState.isOpen,
+      status: this.markdownViewState.isOpen ? 'loading' : 'idle',
+    };
+    this.sendMarkdownViewState();
+  }
+
+  private setMarkdownError(message: string, sourceUrl: string, title: string): void {
+    this.markdownViewState = {
+      ...createEmptyMarkdownViewState(),
+      isOpen: this.markdownViewState.isOpen,
+      status: 'error',
+      sourceUrl,
+      title,
+      lastError: message,
+    };
+    this.sendMarkdownViewState();
+  }
+
+  private sendNavigationState(): void {
+    this.sendToTrustedViews(NAVIGATION_STATE_CHANNEL, this.createNavigationState());
   }
 
   private sendPickerState(): void {
-    if (!this.uiView || this.uiView.webContents.isDestroyed()) {
-      return;
-    }
+    this.sendToTrustedViews(PICKER_STATE_CHANNEL, this.getPickerState());
+  }
 
-    this.uiView.webContents.send(PICKER_STATE_CHANNEL, this.getPickerState());
+  private sendMarkdownViewState(): void {
+    this.sendToTrustedViews(MARKDOWN_VIEW_STATE_CHANNEL, this.getMarkdownViewState());
+  }
+
+  private sendToTrustedViews(channel: string, payload: unknown): void {
+    for (const view of [this.uiView, this.markdownPanelView]) {
+      if (!view || view.webContents.isDestroyed()) {
+        continue;
+      }
+
+      view.webContents.send(channel, payload);
+    }
   }
 
   private destroyWindow(): void {
+    this.closeManagedView(this.markdownPanelView);
     this.closeManagedView(this.pageView);
     this.closeManagedView(this.uiView);
+    this.markdownPanelView = null;
     this.pageView = null;
     this.uiView = null;
+    this.markdownPanelMounted = false;
     this.window = null;
   }
 

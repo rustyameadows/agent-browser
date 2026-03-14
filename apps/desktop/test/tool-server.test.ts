@@ -2,7 +2,11 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createEmptyNavigationState, createEmptyPickerState } from '@agent-browser/protocol';
+import {
+  createEmptyMarkdownViewState,
+  createEmptyNavigationState,
+  createEmptyPickerState,
+} from '@agent-browser/protocol';
 import { ToolServer } from '../src/main/tool-server';
 
 const tempDirs: string[] = [];
@@ -46,6 +50,15 @@ describe('ToolServer', () => {
         getPickerState: () => ({
           ...createEmptyPickerState(),
           lastSelection: null,
+        }),
+        getMarkdownForCurrentPage: async () => ({
+          ...createEmptyMarkdownViewState(),
+          status: 'ready',
+          sourceUrl: 'https://example.com',
+          title: 'Example Domain',
+          markdown: '# Example Domain',
+          site: 'example.com',
+          wordCount: 2,
         }),
       },
       storageDir,
@@ -114,6 +127,7 @@ describe('ToolServer', () => {
       };
     };
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.navigate');
+    expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.viewAsMarkdown');
 
     const navigateResponse = await fetch(connection.url, {
       method: 'POST',
@@ -147,6 +161,36 @@ describe('ToolServer', () => {
       'https://nodesnodesnodes.com',
     );
     expect(lastNavigationTarget).toBe('https://nodesnodesnodes.com');
+
+    const markdownResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: {
+          name: 'page.viewAsMarkdown',
+          arguments: {
+            forceRefresh: true,
+          },
+        },
+      }),
+    });
+
+    const markdownPayload = (await markdownResponse.json()) as {
+      result: {
+        structuredContent: {
+          title: string;
+          markdown: string;
+        };
+      };
+    };
+    expect(markdownPayload.result.structuredContent.title).toBe('Example Domain');
+    expect(markdownPayload.result.structuredContent.markdown).toContain('# Example Domain');
 
     const registrationStats = await stat(connection.registrationFile);
     expect(registrationStats.isFile()).toBe(true);

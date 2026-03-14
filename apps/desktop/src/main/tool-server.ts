@@ -4,6 +4,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type {
+  MarkdownViewState,
   NavigationCommand,
   NavigationState,
   PickerCommand,
@@ -46,6 +47,7 @@ export interface ToolServerRuntime {
   executeNavigationCommand(command: NavigationCommand): Promise<NavigationState>;
   executePickerCommand(command: PickerCommand): Promise<PickerState>;
   getPickerState(): PickerState;
+  getMarkdownForCurrentPage(forceRefresh?: boolean): Promise<MarkdownViewState>;
 }
 
 export interface ToolServerConnectionInfo {
@@ -106,6 +108,17 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'page.viewAsMarkdown',
+    description: 'Return the current page converted to Markdown.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        forceRefresh: { type: 'boolean' },
+      },
       additionalProperties: false,
     },
   },
@@ -405,6 +418,24 @@ export class ToolServer {
         return toolResult({
           picker: this.runtime.getPickerState(),
         });
+      case 'page.viewAsMarkdown': {
+        const markdownView = await this.runtime.getMarkdownForCurrentPage(
+          typeof args.forceRefresh === 'boolean' ? args.forceRefresh : false,
+        );
+
+        if (markdownView.status !== 'ready') {
+          throw new Error(markdownView.lastError ?? 'Markdown view is not ready.');
+        }
+
+        return toolResult({
+          url: markdownView.sourceUrl,
+          title: markdownView.title,
+          markdown: markdownView.markdown,
+          author: markdownView.author,
+          site: markdownView.site,
+          wordCount: markdownView.wordCount,
+        });
+      }
       default:
         throw new Error(`Unknown tool: ${params.name}`);
     }

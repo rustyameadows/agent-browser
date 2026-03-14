@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent, type JSX, type SVGProps } from 'react';
 import {
+  createEmptyMarkdownViewState,
   createEmptyNavigationState,
   createEmptyPickerState,
   type ElementDescriptor,
+  type MarkdownViewCommand,
+  type MarkdownViewState,
   type NavigationCommand,
   type NavigationState,
   type PickerCommand,
@@ -11,12 +14,17 @@ import {
 
 const emptyState = createEmptyNavigationState();
 const emptyPickerState = createEmptyPickerState();
+const emptyMarkdownState = createEmptyMarkdownViewState();
 const stubTabs = ['Agent Chat', 'Inspector'];
+
+type SurfaceMode = 'chrome' | 'markdown';
 
 type IconName =
   | 'arrowUpRight'
+  | 'book'
   | 'chevronLeft'
   | 'chevronRight'
+  | 'close'
   | 'crosshair'
   | 'file'
   | 'globe'
@@ -25,6 +33,11 @@ type IconName =
   | 'search'
   | 'sliders'
   | 'sparkles';
+
+const getSurfaceMode = (): SurfaceMode => {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('surface') === 'markdown' ? 'markdown' : 'chrome';
+};
 
 const getActiveTabLabel = (state: NavigationState): string => {
   if (state.title && state.title !== 'Agent Browser') {
@@ -80,6 +93,38 @@ const getSelectionMeta = (selection: ElementDescriptor): string => {
   }
 
   return summaryParts.join(' | ');
+};
+
+const getMarkdownSourceLabel = (state: MarkdownViewState): string => {
+  if (state.site) {
+    return state.site;
+  }
+
+  if (!state.sourceUrl) {
+    return 'Current page';
+  }
+
+  try {
+    return new URL(state.sourceUrl).hostname.replace(/^www\./, '');
+  } catch {
+    return state.sourceUrl;
+  }
+};
+
+const getMarkdownStatusText = (state: MarkdownViewState): string => {
+  switch (state.status) {
+    case 'loading':
+      return 'Generating Markdown from the current page...';
+    case 'ready':
+      return state.wordCount
+        ? `${state.wordCount.toLocaleString()} words extracted`
+        : 'Markdown ready';
+    case 'error':
+      return state.lastError ?? 'Markdown generation failed.';
+    case 'idle':
+    default:
+      return 'Open this panel from the main chrome to convert the current page.';
+  }
 };
 
 const ChromeIcon = ({
@@ -181,6 +226,18 @@ const ChromeIcon = ({
           />
         </svg>
       );
+    case 'book':
+      return (
+        <svg fill="none" viewBox="0 0 20 20" {...props}>
+          <path
+            d="M5.25 4.25h8A1.75 1.75 0 0 1 15 6v8.75H7A1.75 1.75 0 0 0 5.25 16.5V4.25Zm0 0A1.75 1.75 0 0 0 3.5 6v8.5m3.5.25h8"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.55"
+          />
+        </svg>
+      );
     case 'arrowUpRight':
       return (
         <svg fill="none" viewBox="0 0 20 20" {...props}>
@@ -205,6 +262,17 @@ const ChromeIcon = ({
           />
         </svg>
       );
+    case 'close':
+      return (
+        <svg fill="none" viewBox="0 0 20 20" {...props}>
+          <path
+            d="m5.5 5.5 9 9m0-9-9 9"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeWidth="1.8"
+          />
+        </svg>
+      );
     case 'globe':
       return (
         <svg fill="none" viewBox="0 0 20 20" {...props}>
@@ -220,13 +288,8 @@ const ChromeIcon = ({
   }
 };
 
-export const App = (): JSX.Element => {
+const useNavigationState = (): NavigationState => {
   const [navigationState, setNavigationState] = useState<NavigationState>(emptyState);
-  const [pickerState, setPickerState] = useState<PickerState>(emptyPickerState);
-  const [draftUrl, setDraftUrl] = useState('');
-  const [isEditingAddress, setIsEditingAddress] = useState(false);
-  const [copyFeedback, setCopyFeedback] = useState('Copy JSON');
-  const copyTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -238,7 +301,6 @@ export const App = (): JSX.Element => {
       }
 
       setNavigationState(initialState);
-      setDraftUrl(initialState.url);
     };
 
     void syncInitialState();
@@ -249,16 +311,19 @@ export const App = (): JSX.Element => {
       }
 
       setNavigationState(nextState);
-      if (!isEditingAddress) {
-        setDraftUrl(nextState.url);
-      }
     });
 
     return () => {
       isMounted = false;
       unsubscribe();
     };
-  }, [isEditingAddress]);
+  }, []);
+
+  return navigationState;
+};
+
+const usePickerState = (): PickerState => {
+  const [pickerState, setPickerState] = useState<PickerState>(emptyPickerState);
 
   useEffect(() => {
     let isMounted = true;
@@ -285,6 +350,63 @@ export const App = (): JSX.Element => {
     return () => {
       isMounted = false;
       unsubscribe();
+    };
+  }, []);
+
+  return pickerState;
+};
+
+const useMarkdownViewState = (): MarkdownViewState => {
+  const [markdownViewState, setMarkdownViewState] = useState<MarkdownViewState>(emptyMarkdownState);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const syncInitialMarkdownState = async (): Promise<void> => {
+      const initialState = await window.agentBrowser.getMarkdownViewState();
+      if (!isMounted) {
+        return;
+      }
+
+      setMarkdownViewState(initialState);
+    };
+
+    void syncInitialMarkdownState();
+
+    const unsubscribe = window.agentBrowser.subscribeMarkdownView((nextState) => {
+      if (!isMounted) {
+        return;
+      }
+
+      setMarkdownViewState(nextState);
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  return markdownViewState;
+};
+
+const ChromeSurface = (): JSX.Element => {
+  const navigationState = useNavigationState();
+  const pickerState = usePickerState();
+  const markdownViewState = useMarkdownViewState();
+  const [draftUrl, setDraftUrl] = useState('');
+  const [isEditingAddress, setIsEditingAddress] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState('Copy JSON');
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isEditingAddress) {
+      setDraftUrl(navigationState.url);
+    }
+  }, [isEditingAddress, navigationState.url]);
+
+  useEffect(() => {
+    return () => {
       if (copyTimerRef.current !== null) {
         window.clearTimeout(copyTimerRef.current);
       }
@@ -293,7 +415,6 @@ export const App = (): JSX.Element => {
 
   const runCommand = async (command: NavigationCommand): Promise<void> => {
     const nextState = await window.agentBrowser.execute(command);
-    setNavigationState(nextState);
 
     if (command.action === 'navigate') {
       setDraftUrl(nextState.url);
@@ -302,8 +423,11 @@ export const App = (): JSX.Element => {
   };
 
   const runPickerCommand = async (command: PickerCommand): Promise<void> => {
-    const nextState = await window.agentBrowser.executePicker(command);
-    setPickerState(nextState);
+    await window.agentBrowser.executePicker(command);
+  };
+
+  const runMarkdownCommand = async (command: MarkdownViewCommand): Promise<void> => {
+    await window.agentBrowser.executeMarkdownView(command);
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -457,6 +581,23 @@ export const App = (): JSX.Element => {
             >
               <ChromeIcon className="shell__icon" name="crosshair" />
             </button>
+            <button
+              aria-label={markdownViewState.isOpen ? 'Close Markdown view' : 'View page as Markdown'}
+              aria-pressed={markdownViewState.isOpen}
+              className={`shell__pillButton shell__pillButton--md${
+                markdownViewState.isOpen ? ' shell__pillButton--mdActive' : ''
+              }`}
+              disabled={navigationState.isLoading}
+              onClick={() =>
+                void runMarkdownCommand({
+                  action: markdownViewState.isOpen ? 'close' : 'open',
+                })
+              }
+              type="button"
+            >
+              <ChromeIcon className="shell__icon" name="book" />
+              <span>View as MD</span>
+            </button>
             <div aria-hidden="true" className="shell__toolbarStub">
               <ChromeIcon className="shell__icon shell__icon--muted" name="sliders" />
             </div>
@@ -505,3 +646,110 @@ export const App = (): JSX.Element => {
     </main>
   );
 };
+
+const MarkdownSurface = (): JSX.Element => {
+  const markdownViewState = useMarkdownViewState();
+  const [copyFeedback, setCopyFeedback] = useState('Copy Markdown');
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const runMarkdownCommand = async (command: MarkdownViewCommand): Promise<void> => {
+    await window.agentBrowser.executeMarkdownView(command);
+  };
+
+  const handleCopyMarkdown = (): void => {
+    if (!markdownViewState.markdown) {
+      return;
+    }
+
+    window.agentBrowser.copyText(markdownViewState.markdown);
+    setCopyFeedback('Copied');
+
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopyFeedback('Copy Markdown');
+      copyTimerRef.current = null;
+    }, 1500);
+  };
+
+  return (
+    <main className="markdownSurface">
+      <section className="markdownSurface__panel">
+        <header className="markdownSurface__header">
+          <div className="markdownSurface__eyebrow">View Page As MD</div>
+          <button
+            aria-label="Close Markdown view"
+            className="markdownSurface__iconButton"
+            onClick={() => void runMarkdownCommand({ action: 'close' })}
+            type="button"
+          >
+            <ChromeIcon className="shell__icon" name="close" />
+          </button>
+        </header>
+
+        <div className="markdownSurface__summary">
+          <div className="markdownSurface__title">
+            {markdownViewState.title || 'Current page'}
+          </div>
+          <div className="markdownSurface__source">
+            {getMarkdownSourceLabel(markdownViewState)}
+          </div>
+        </div>
+
+        <div
+          className={`markdownSurface__status${
+            markdownViewState.status === 'error' ? ' markdownSurface__status--error' : ''
+          }`}
+        >
+          {getMarkdownStatusText(markdownViewState)}
+        </div>
+
+        <div className="markdownSurface__actions">
+          <button
+            className="shell__pillButton"
+            disabled={!markdownViewState.markdown}
+            onClick={handleCopyMarkdown}
+            type="button"
+          >
+            {copyFeedback}
+          </button>
+          <button
+            className="shell__pillButton shell__pillButton--muted"
+            onClick={() => void runMarkdownCommand({ action: 'refresh', force: true })}
+            type="button"
+          >
+            Refresh
+          </button>
+          <button
+            className="shell__pillButton shell__pillButton--muted"
+            onClick={() => void runMarkdownCommand({ action: 'close' })}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+
+        <section className="markdownSurface__body">
+          {markdownViewState.status === 'ready' ? (
+            <pre className="markdownSurface__content">{markdownViewState.markdown}</pre>
+          ) : (
+            <div className="markdownSurface__empty">{getMarkdownStatusText(markdownViewState)}</div>
+          )}
+        </section>
+      </section>
+    </main>
+  );
+};
+
+export const App = (): JSX.Element =>
+  getSurfaceMode() === 'markdown' ? <MarkdownSurface /> : <ChromeSurface />;
