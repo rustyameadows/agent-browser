@@ -582,7 +582,7 @@ export class ToolServer {
       lastError: null,
     });
 
-    this.logger.info(`Agent Browser tool server ready at ${this.connectionInfo.url}`);
+    this.logger.info(`Browser Loop tool server ready at ${this.connectionInfo.url}`);
     return this.connectionInfo;
   }
 

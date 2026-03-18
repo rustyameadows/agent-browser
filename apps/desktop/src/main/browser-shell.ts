@@ -145,7 +145,7 @@ export class BrowserShell {
       height: 960,
       minWidth: 980,
       minHeight: 720,
-      title: 'Agent Browser',
+      title: 'Browser Loop',
       backgroundColor: '#edf0f4',
       titleBarStyle: 'hiddenInset',
     });
@@ -1514,7 +1514,7 @@ export class BrowserShell {
 
     return {
       url: webContents.getURL(),
-      title: webContents.getTitle() || 'Agent Browser',
+      title: webContents.getTitle() || 'Browser Loop',
       isLoading: webContents.isLoading(),
       canGoBack: navigationHistory.canGoBack(),
       canGoForward: navigationHistory.canGoForward(),

@@ -1,6 +1,6 @@
-# Agent Browser
+# Browser Loop
 
-Agent Browser is the bootstrap monorepo for the macOS Electron browser shell described in [agent-browser-plan.md](agent-browser-plan.md). The first push includes a working Electron desktop shell, a shared protocol package for IPC typing, and GitHub Actions that package unsigned macOS development artifacts.
+Browser Loop is the bootstrap monorepo for the macOS Electron browser shell described in [agent-browser-plan.md](agent-browser-plan.md). The first push includes a working Electron desktop shell, a shared protocol package for IPC typing, and GitHub Actions that package unsigned macOS development artifacts.
 
 ## Guides
 
@@ -31,7 +31,7 @@ The top toolbar now also includes `View as MD`. That button opens a dedicated tr
 
 The toolbar also includes `MCP Status`, a live red/yellow/green indicator for the local MCP server. That button opens a dedicated diagnostics panel with the current transport URL, registration manifest path, exposed tools, recent request activity, and a built-in self-test against `/health`, `initialize`, and `tools/list`.
 
-While the app is running, the main process also starts a localhost JSON-RPC tool server at `127.0.0.1`. The current registration manifest is written to `~/Library/Application Support/Agent Browser/mcp-registration.json` on macOS and includes the URL plus bearer token header needed by local tool clients. The current tool set includes `browser.listTabs`, `browser.getWindowState`, `browser.resizeWindow`, `page.navigate`, `picker.enable`, `picker.disable`, `picker.lastSelection`, `feedback.getState`, `feedback.list`, `feedback.create`, `feedback.reply`, `feedback.setStatus`, `page.viewAsMarkdown`, `page.screenshot`, `artifacts.get`, `artifacts.list`, and `artifacts.delete`.
+While the app is running, the main process also starts a localhost JSON-RPC tool server at `127.0.0.1`. The current registration manifest is written to `~/Library/Application Support/Browser Loop/mcp-registration.json` on macOS and includes the URL plus bearer token header needed by local tool clients. The current tool set includes `browser.listTabs`, `browser.getWindowState`, `browser.resizeWindow`, `page.navigate`, `picker.enable`, `picker.disable`, `picker.lastSelection`, `feedback.getState`, `feedback.list`, `feedback.create`, `feedback.reply`, `feedback.setStatus`, `page.viewAsMarkdown`, `page.screenshot`, `artifacts.get`, `artifacts.list`, and `artifacts.delete`.
 
 Screenshot tool results are artifact-backed. The tool server stores screenshots under the app’s data directory, returns lightweight metadata plus an `artifactId`, and lets local clients resolve the saved file path through `artifacts.get`. Supported screenshot targets are the visible page view, a selected DOM element, and the full app window including native frame.
 
