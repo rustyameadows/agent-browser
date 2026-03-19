@@ -64,7 +64,7 @@ const getSurfaceMode = (): SurfaceMode => {
 };
 
 const getActiveTabLabel = (state: NavigationState): string => {
-  if (state.title && state.title !== 'Browser Loop') {
+  if (state.title && state.title !== 'Loop Browser') {
     return state.title;
   }
 

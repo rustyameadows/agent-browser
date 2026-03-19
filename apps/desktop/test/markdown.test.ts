@@ -8,10 +8,10 @@ describe('extractMarkdownFromHtml', () => {
     const result = await extractMarkdownFromHtml({
       html,
       url: 'file:///tmp/local-fixture.html',
-      fallbackTitle: 'Browser Loop Fixture',
+      fallbackTitle: 'Loop Fixture',
     });
 
-    expect(result.title).toBe('Browser Loop Fixture');
+    expect(result.title).toBe('Loop Fixture');
     expect(result.markdown).toContain('## Your local launchpad is ready.');
     expect(result.markdown).toContain('**Remote navigation**');
     expect(result.wordCount).toBeGreaterThan(10);

@@ -4,7 +4,7 @@ import { installAppMenu } from './menu';
 import { resolveRuntimeConfig } from './runtime-config';
 import { ToolServer } from './tool-server';
 
-app.setName('Browser Loop');
+app.setName('Loop Browser');
 
 const runtimeConfig = resolveRuntimeConfig(process.env);
 
@@ -34,9 +34,9 @@ app.whenReady().then(() => {
     .then(() => toolServer.runSelfTest())
     .catch((error) => {
       const message =
-        error instanceof Error ? error.message : 'Failed to start Browser Loop tool server.';
+        error instanceof Error ? error.message : 'Failed to start Loop Browser tool server.';
       toolServer.reportLifecycleError(message);
-      console.error('Failed to start Browser Loop tool server.', error);
+      console.error('Failed to start Loop Browser tool server.', error);
     });
 
   app.on('activate', () => {
@@ -53,9 +53,9 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   void toolServer.stop().catch((error) => {
     const message =
-      error instanceof Error ? error.message : 'Failed to stop Browser Loop tool server cleanly.';
+      error instanceof Error ? error.message : 'Failed to stop Loop Browser tool server cleanly.';
     toolServer.reportLifecycleError(message);
-    console.error('Failed to stop Browser Loop tool server cleanly.', error);
+    console.error('Failed to stop Loop Browser tool server cleanly.', error);
   });
   browserShell.dispose();
 });

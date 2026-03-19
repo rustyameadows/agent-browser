@@ -194,11 +194,11 @@ const findPackagedBinary = async () => {
     'apps',
     'desktop',
     'out',
-    `Browser Loop-darwin-${process.arch}`,
-    'Browser Loop.app',
+    `Loop Browser-darwin-${process.arch}`,
+    'Loop Browser.app',
     'Contents',
     'MacOS',
-    'Browser Loop',
+    'Loop Browser',
   )
 
   try {
@@ -212,17 +212,17 @@ const findPackagedBinary = async () => {
   const entries = await readdir(outDir, { withFileTypes: true })
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory() || !entry.name.startsWith('Browser Loop-darwin-')) {
+    if (!entry.isDirectory() || !entry.name.startsWith('Loop Browser-darwin-')) {
       continue
     }
 
     const candidate = path.join(
       outDir,
       entry.name,
-      'Browser Loop.app',
+      'Loop Browser.app',
       'Contents',
       'MacOS',
-      'Browser Loop',
+      'Loop Browser',
     )
 
     try {
@@ -234,7 +234,7 @@ const findPackagedBinary = async () => {
   }
 
   throw new Error(
-    'Could not find a packaged Browser Loop binary. Run `npm run build` first.',
+    'Could not find a packaged Loop Browser binary. Run `npm run build` first.',
   )
 }
 
@@ -450,7 +450,7 @@ const run = async () => {
       'page.viewAsMarkdown did not report the fixture URL.',
     )
     assert(
-      markdown.body?.result?.structuredContent?.title === 'Browser Loop Fixture',
+      markdown.body?.result?.structuredContent?.title === 'Loop Fixture',
       'page.viewAsMarkdown did not return the expected fixture title.',
     )
     assert(
