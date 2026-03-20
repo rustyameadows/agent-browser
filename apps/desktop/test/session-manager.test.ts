@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -24,7 +24,11 @@ vi.mock('electron', () => ({
 }));
 
 import { deriveProjectSessionSlug } from '../src/main/project-appearance';
-import { SessionDirectoryController } from '../src/main/session-manager';
+import {
+  ProjectSessionAdvertiser,
+  SessionDirectoryController,
+} from '../src/main/session-manager';
+import type { BrowserShell } from '../src/main/browser-shell';
 
 const originalFetch = globalThis.fetch;
 const tempDirs: string[] = [];
@@ -83,6 +87,34 @@ const writeSessionRecord = async (
   );
 };
 
+const readSessionRecord = async (clusterDir: string, sessionId: string): Promise<{
+  summary: {
+    isFocused: boolean;
+  };
+}> => {
+  const filePath = path.join(clusterDir, 'sessions', `${sessionId}.json`);
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      return JSON.parse(await readFile(filePath, 'utf8')) as {
+        summary: {
+          isFocused: boolean;
+        };
+      };
+    } catch (error) {
+      if (
+        !(error instanceof SyntaxError) &&
+        !(error instanceof Error && error.message.includes('ENOENT'))
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  throw new Error(`Could not read a complete session record for ${sessionId}.`);
+};
+
 describe('SessionDirectoryController', () => {
   it('reads, orders, and removes session records from the cluster directory', async () => {
     const clusterDir = await mkdtemp(path.join(os.tmpdir(), 'agent-browser-session-cluster-'));
@@ -136,8 +168,15 @@ describe('SessionDirectoryController', () => {
       isFocused: false,
     });
 
-    const fetchMock = vi.fn(async () =>
-      new Response(
+    const fetchMock = vi.fn(async () => {
+      await writeSessionRecord(clusterDir, {
+        sessionId,
+        projectRoot,
+        projectName: 'client-a',
+        isFocused: true,
+      });
+
+      return new Response(
         JSON.stringify({
           jsonrpc: '2.0',
           id: 'internal/sessionFocus',
@@ -149,8 +188,8 @@ describe('SessionDirectoryController', () => {
             'content-type': 'application/json',
           },
         },
-      ),
-    );
+      );
+    });
     (globalThis as { fetch?: typeof fetch }).fetch = fetchMock;
 
     const controller = new SessionDirectoryController({
@@ -175,7 +214,62 @@ describe('SessionDirectoryController', () => {
     const requestInit = firstFetchCall[1];
     expect(String(requestInit.body)).toContain('internal/sessionFocus');
     expect(controller.getState().currentSessionId).toBe(sessionId);
+    expect(controller.getCurrentSession()?.isFocused).toBe(true);
 
     await controller.dispose();
+  });
+
+  it('publishes a fresh session snapshot immediately on focus changes', async () => {
+    const clusterDir = await mkdtemp(path.join(os.tmpdir(), 'agent-browser-session-cluster-'));
+    tempDirs.push(clusterDir);
+
+    const focusListeners = new Set<(isFocused: boolean) => void>();
+    let isFocused = false;
+    const browserShell = {
+      getChromeAppearanceState: () => ({
+        chromeColor: '#F297E7',
+        projectIconPath: '',
+        dockIconStatus: 'applied' as const,
+      }),
+      isWindowFocused: () => isFocused,
+      subscribeWindowFocus: (listener: (focused: boolean) => void) => {
+        focusListeners.add(listener);
+        return () => {
+          focusListeners.delete(listener);
+        };
+      },
+    } as unknown as BrowserShell;
+
+    const advertiser = new ProjectSessionAdvertiser({
+      clusterDir,
+      sessionId: 'client-a-1234abcd',
+      browserShell,
+      connectionInfo: {
+        url: 'http://127.0.0.1:46255/mcp',
+        token: 'session-token',
+        registrationFile: '/tmp/mcp-registration.json',
+      },
+      projectRoot: '/tmp/client-a',
+    });
+
+    await advertiser.start();
+    expect((await readSessionRecord(clusterDir, 'client-a-1234abcd')).summary.isFocused).toBe(false);
+
+    isFocused = true;
+    for (const listener of focusListeners) {
+      listener(true);
+    }
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 1_000) {
+      if ((await readSessionRecord(clusterDir, 'client-a-1234abcd')).summary.isFocused) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    expect((await readSessionRecord(clusterDir, 'client-a-1234abcd')).summary.isFocused).toBe(true);
+
+    await advertiser.stop();
   });
 });

@@ -1,10 +1,12 @@
 export const screenshotTargets = ['page', 'element', 'window'] as const;
 export const screenshotFormats = ['png', 'jpeg'] as const;
 export const resizeTargets = ['window', 'content', 'pageViewport'] as const;
+export const pageScrollBlocks = ['start', 'center', 'end', 'nearest'] as const;
 
 export type ScreenshotTarget = (typeof screenshotTargets)[number];
 export type ScreenshotFormat = (typeof screenshotFormats)[number];
 export type ResizeTarget = (typeof resizeTargets)[number];
+export type PageScrollBlock = (typeof pageScrollBlocks)[number];
 
 export interface WindowRect {
   x: number;
@@ -18,6 +20,7 @@ export interface ScreenshotRequest {
   selector?: string;
   format?: ScreenshotFormat;
   quality?: number;
+  fullPage?: boolean;
   fileNameHint?: string;
 }
 
@@ -48,6 +51,21 @@ export interface ResizeWindowRequest {
   width: number;
   height: number;
   target?: ResizeTarget;
+}
+
+export interface PageScrollRequest {
+  selector?: string;
+  block?: PageScrollBlock;
+  byX?: number;
+  byY?: number;
+}
+
+export interface PageScrollResult {
+  scrollX: number;
+  scrollY: number;
+  maxScrollX: number;
+  maxScrollY: number;
+  url: string;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -96,11 +114,73 @@ export const isScreenshotRequest = (value: unknown): value is ScreenshotRequest 
     return false;
   }
 
+  if ('fullPage' in value && value.fullPage !== undefined) {
+    if (typeof value.fullPage !== 'boolean') {
+      return false;
+    }
+
+    if (value.target !== 'page') {
+      return false;
+    }
+  }
+
   if (
     'fileNameHint' in value &&
     value.fileNameHint !== undefined &&
     typeof value.fileNameHint !== 'string'
   ) {
+    return false;
+  }
+
+  return true;
+};
+
+export const isPageScrollRequest = (value: unknown): value is PageScrollRequest => {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const selector = value.selector;
+  const block = value.block;
+  const byX = value.byX;
+  const byY = value.byY;
+  const hasSelector = typeof selector === 'string';
+  const hasByX = 'byX' in value && value.byX !== undefined;
+  const hasByY = 'byY' in value && value.byY !== undefined;
+  const hasDelta = hasByX || hasByY;
+
+  if (hasSelector) {
+    if (selector.trim().length === 0) {
+      return false;
+    }
+
+    if (hasDelta) {
+      return false;
+    }
+
+    if ('block' in value && block !== undefined) {
+      return (
+        typeof block === 'string' &&
+        pageScrollBlocks.includes(block as PageScrollBlock)
+      );
+    }
+
+    return true;
+  }
+
+  if ('block' in value && block !== undefined) {
+    return false;
+  }
+
+  if (!hasDelta) {
+    return false;
+  }
+
+  if (hasByX && !isFiniteNumber(byX)) {
+    return false;
+  }
+
+  if (hasByY && !isFiniteNumber(byY)) {
     return false;
   }
 

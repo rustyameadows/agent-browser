@@ -6,7 +6,6 @@ import { ArtifactStore } from '../src/main/artifact-store';
 import {
   CHROME_HEIGHT,
   buildScreenshotFileName,
-  clipElementToViewport,
   computeContentSizeForResize,
 } from '../src/main/screenshot';
 
@@ -48,39 +47,6 @@ describe('screenshot helpers', () => {
         hasSidePanelOpen: false,
       }),
     ).toEqual({ width: 1280, height: 720 + CHROME_HEIGHT });
-  });
-
-  it('clips element bounds to the visible viewport and computes pixel size', () => {
-    expect(
-      clipElementToViewport({
-        x: -20,
-        y: 12,
-        width: 120,
-        height: 64,
-        devicePixelRatio: 2,
-        viewportWidth: 90,
-        viewportHeight: 70,
-      }),
-    ).toEqual({
-      x: 0,
-      y: 12,
-      width: 90,
-      height: 58,
-      pixelWidth: 180,
-      pixelHeight: 116,
-    });
-
-    expect(
-      clipElementToViewport({
-        x: 300,
-        y: 400,
-        width: 100,
-        height: 50,
-        devicePixelRatio: 2,
-        viewportWidth: 200,
-        viewportHeight: 200,
-      }),
-    ).toBeNull();
   });
 
   it('builds stable artifact file names and persists metadata', async () => {

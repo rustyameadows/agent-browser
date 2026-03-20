@@ -16,6 +16,8 @@ import type {
   McpRequestOutcome,
   McpSelfTestSummary,
   MarkdownViewState,
+  PageScrollRequest,
+  PageScrollResult,
   NavigationCommand,
   NavigationState,
   PickerCommand,
@@ -26,7 +28,11 @@ import type {
   ScreenshotRequest,
   WindowState,
 } from '@agent-browser/protocol';
-import { isResizeWindowRequest, isScreenshotRequest } from '@agent-browser/protocol';
+import {
+  isPageScrollRequest,
+  isResizeWindowRequest,
+  isScreenshotRequest,
+} from '@agent-browser/protocol';
 import { ArtifactStore } from './artifact-store';
 import type { BrowserScreenshotCapture } from './browser-shell';
 import { DEFAULT_TOOL_SERVER_PORT } from './runtime-config';
@@ -90,6 +96,7 @@ export interface ToolServerRuntime {
   executeFeedbackCommand(command: FeedbackCommand, sessionId?: string): Promise<FeedbackState>;
   getFeedbackState(sessionId?: string): Awaitable<FeedbackState>;
   getMarkdownForCurrentPage(forceRefresh?: boolean, sessionId?: string): Promise<MarkdownViewState>;
+  executePageScroll(request: PageScrollRequest, sessionId?: string): Promise<PageScrollResult>;
   getWindowState(sessionId?: string): Awaitable<WindowState>;
   resizeWindow(request: ResizeWindowRequest, sessionId?: string): Promise<WindowState>;
   captureScreenshot(request: ScreenshotRequest, sessionId?: string): Promise<BrowserScreenshotCapture>;
@@ -288,6 +295,7 @@ const SESSION_SCOPED_TOOL_NAMES = new Set([
   'feedback.progress',
   'feedback.setStatus',
   'page.viewAsMarkdown',
+  'page.scroll',
   'page.screenshot',
   'browser.getWindowState',
   'browser.resizeWindow',
@@ -587,6 +595,23 @@ const BASE_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'page.scroll',
+    description: 'Scroll the current page to a selector or by pixel deltas.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string' },
+        block: {
+          type: 'string',
+          enum: ['start', 'center', 'end', 'nearest'],
+        },
+        byX: { type: 'number' },
+        byY: { type: 'number' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'page.screenshot',
     description: 'Capture a screenshot of the page, an element, or the full app window.',
     inputSchema: {
@@ -602,6 +627,7 @@ const BASE_TOOL_DEFINITIONS: ToolDefinition[] = [
           enum: ['png', 'jpeg'],
         },
         quality: { type: 'number' },
+        fullPage: { type: 'boolean' },
         fileNameHint: { type: 'string' },
       },
       required: ['target'],
@@ -2002,6 +2028,15 @@ export class ToolServer {
           site: markdownView.site,
           wordCount: markdownView.wordCount,
         });
+      }
+      case 'page.scroll': {
+        if (!isPageScrollRequest(args)) {
+          throw new Error(
+            'page.scroll requires either a selector or at least one numeric byX/byY delta.',
+          );
+        }
+
+        return toolResult(await this.runtime.executePageScroll(args, sessionId));
       }
       case 'page.screenshot': {
         if (!isScreenshotRequest(args)) {

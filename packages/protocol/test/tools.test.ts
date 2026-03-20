@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isArtifactRecord,
+  isPageScrollRequest,
   isResizeWindowRequest,
   isScreenshotArtifact,
   isScreenshotRequest,
@@ -10,6 +11,7 @@ import {
 describe('tool protocol guards', () => {
   it('accepts valid screenshot requests', () => {
     expect(isScreenshotRequest({ target: 'page' })).toBe(true);
+    expect(isScreenshotRequest({ target: 'page', fullPage: true })).toBe(true);
     expect(
       isScreenshotRequest({
         target: 'element',
@@ -19,6 +21,10 @@ describe('tool protocol guards', () => {
         fileNameHint: 'fixture-card',
       }),
     ).toBe(true);
+    expect(isPageScrollRequest({ selector: '.card' })).toBe(true);
+    expect(isPageScrollRequest({ selector: '.card', block: 'center' })).toBe(true);
+    expect(isPageScrollRequest({ byY: 480 })).toBe(true);
+    expect(isPageScrollRequest({ byX: 24, byY: 480 })).toBe(true);
   });
 
   it('accepts valid screenshot artifacts and window state', () => {
@@ -66,6 +72,11 @@ describe('tool protocol guards', () => {
       isResizeWindowRequest({ width: 1440, height: 900, target: 'pageViewport' }),
     ).toBe(true);
     expect(isScreenshotRequest({ target: 'full' })).toBe(false);
+    expect(isScreenshotRequest({ target: 'element', fullPage: true })).toBe(false);
+    expect(isPageScrollRequest({ selector: '.card', byY: 200 })).toBe(false);
+    expect(isPageScrollRequest({ block: 'center' })).toBe(false);
+    expect(isPageScrollRequest({ byY: '200' })).toBe(false);
+    expect(isPageScrollRequest({})).toBe(false);
     expect(isResizeWindowRequest({ width: 'wide', height: 900 })).toBe(false);
     expect(
       isArtifactRecord({

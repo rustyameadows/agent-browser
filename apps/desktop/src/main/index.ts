@@ -169,6 +169,7 @@ const createProjectSessionBootstrap = (): {
     executeFeedbackCommand: (command) => browserShell.executeFeedbackCommand(command),
     getFeedbackState: () => browserShell.getFeedbackState(),
     getMarkdownForCurrentPage: (forceRefresh) => browserShell.getMarkdownForCurrentPage(forceRefresh),
+    executePageScroll: (request) => browserShell.scrollPage(request),
     getWindowState: () => browserShell.getWindowState(),
     resizeWindow: (request) => browserShell.resizeWindow(request),
     captureScreenshot: (request) => browserShell.captureScreenshot(request),

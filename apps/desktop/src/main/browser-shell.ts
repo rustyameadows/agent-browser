@@ -80,6 +80,8 @@ import {
   type McpViewState,
   type MarkdownViewCommand,
   type MarkdownViewState,
+  type PageScrollRequest,
+  type PageScrollResult,
   type NavigationCommand,
   type NavigationState,
   type AgentLoginCtaState,
@@ -112,7 +114,6 @@ import {
   CHROME_HEIGHT,
   SIDE_PANEL_BREAKPOINT,
   SIDE_PANEL_WIDTH,
-  clipElementToViewport,
   computeContentSizeForResize,
   getMimeTypeForFormat,
   inferPixelSizeFromScaleFactor,
@@ -210,6 +211,7 @@ export class BrowserShell {
   private dockIconSource: ChromeAppearanceState['dockIconSource'] = 'chromeColor';
   private appliedDockIconKey: string | null = null;
   private launcherDockVisibility: 'shown' | 'hidden' | null = null;
+  private readonly windowFocusListeners = new Set<(isFocused: boolean) => void>();
 
   constructor(private readonly options: BrowserShellOptions = {}) {
     this.role = options.role ?? 'project-session';
@@ -533,7 +535,21 @@ export class BrowserShell {
 
   focusWindow(): void {
     this.ensureWindow();
+    if (process.platform === 'darwin') {
+      app.focus({ steal: true });
+    } else {
+      app.focus();
+    }
+    (this.window as BaseWindow & { show?: () => void }).show?.();
     this.window?.focus();
+    this.scheduleWindowFocusRefresh();
+  }
+
+  subscribeWindowFocus(listener: (isFocused: boolean) => void): () => void {
+    this.windowFocusListeners.add(listener);
+    return () => {
+      this.windowFocusListeners.delete(listener);
+    };
   }
 
   closeWindow(): void {
@@ -552,6 +568,10 @@ export class BrowserShell {
 
   async executeNavigationCommand(command: NavigationCommand): Promise<NavigationState> {
     return this.executeNavigation(command);
+  }
+
+  async scrollPage(request: PageScrollRequest): Promise<PageScrollResult> {
+    return this.executePageScroll(request);
   }
 
   async resizeWindow(request: ResizeWindowRequest): Promise<WindowState> {
@@ -586,7 +606,12 @@ export class BrowserShell {
 
     switch (request.target) {
       case 'page':
-        return this.capturePageViewport(format, request.fileNameHint, request.quality);
+        return this.capturePageViewport(
+          format,
+          request.fileNameHint,
+          request.quality,
+          request.fullPage ?? false,
+        );
       case 'element':
         return this.captureElementScreenshot(request, format);
       case 'window':
@@ -1133,6 +1158,14 @@ export class BrowserShell {
       return;
     }
 
+    this.window.on('focus', () => {
+      this.notifyWindowFocusChanged();
+    });
+
+    this.window.on('blur', () => {
+      this.notifyWindowFocusChanged();
+    });
+
     this.window.on('resize', () => {
       this.layoutViews();
     });
@@ -1140,6 +1173,21 @@ export class BrowserShell {
     this.window.on('closed', () => {
       this.destroyWindow();
     });
+  }
+
+  private notifyWindowFocusChanged(): void {
+    const isFocused = this.isWindowFocused();
+    for (const listener of this.windowFocusListeners) {
+      listener(isFocused);
+    }
+  }
+
+  private scheduleWindowFocusRefresh(): void {
+    for (const delayMs of [0, 100, 250, 500, 1_000]) {
+      setTimeout(() => {
+        this.notifyWindowFocusChanged();
+      }, delayMs);
+    }
   }
 
   private attachPageEvents(): void {
@@ -1428,10 +1476,80 @@ export class BrowserShell {
     return this.createNavigationState();
   }
 
+  private async executePageScroll(request: PageScrollRequest): Promise<PageScrollResult> {
+    if (!this.pageView) {
+      throw new Error('Page view is not ready.');
+    }
+
+    const payload = (await this.pageView.webContents.executeJavaScript(
+      `(() => {
+        const request = ${JSON.stringify({
+          mode: typeof request.selector === 'string' ? 'selector' : 'delta',
+          selector: request.selector ?? null,
+          block: request.block ?? 'center',
+          byX: typeof request.byX === 'number' ? request.byX : 0,
+          byY: typeof request.byY === 'number' ? request.byY : 0,
+        })};
+        const scrollingElement =
+          document.scrollingElement ?? document.documentElement ?? document.body;
+        const serialize = () => ({
+          scrollX: Number(window.scrollX.toFixed(2)),
+          scrollY: Number(window.scrollY.toFixed(2)),
+          maxScrollX: Number(
+            Math.max((scrollingElement?.scrollWidth ?? window.innerWidth) - window.innerWidth, 0).toFixed(2),
+          ),
+          maxScrollY: Number(
+            Math.max((scrollingElement?.scrollHeight ?? window.innerHeight) - window.innerHeight, 0).toFixed(2),
+          ),
+          url: window.location.href,
+        });
+
+        try {
+          if (request.mode === 'selector') {
+            const element = document.querySelector(request.selector);
+            if (!element) {
+              return { ok: false, error: 'The requested selector did not match any element.' };
+            }
+
+            element.scrollIntoView({
+              block: request.block,
+              inline: 'nearest',
+            });
+          } else {
+            window.scrollBy(request.byX, request.byY);
+          }
+
+          return new Promise((resolve) => {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                resolve({
+                  ok: true,
+                  result: serialize(),
+                });
+              });
+            });
+          });
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : 'Could not scroll the page.',
+          };
+        }
+      })()`,
+    )) as { ok: boolean; result?: PageScrollResult; error?: string };
+
+    if (!payload.ok || !payload.result) {
+      throw new Error(payload.error ?? 'Could not scroll the page.');
+    }
+
+    return payload.result;
+  }
+
   private async capturePageViewport(
     format: ScreenshotFormat,
     fileNameHint?: string,
     quality?: number,
+    fullPage = false,
   ): Promise<BrowserScreenshotCapture> {
     if (!this.pageView) {
       throw new Error('Page view is not ready.');
@@ -1440,6 +1558,10 @@ export class BrowserShell {
     const viewportBounds = this.pageView.getBounds();
     if (viewportBounds.width <= 0 || viewportBounds.height <= 0) {
       throw new Error('The page view is not currently visible.');
+    }
+
+    if (fullPage) {
+      return this.captureFullPageScreenshot(format, fileNameHint, quality);
     }
 
     const image = await this.pageView.webContents.capturePage();
@@ -1465,29 +1587,27 @@ export class BrowserShell {
       throw new Error('Element screenshots require a selector or an existing picker selection.');
     }
 
-    const elementBox = await this.snapshotElementBox(selector);
-    const clippedRect = clipElementToViewport(elementBox);
-    if (!clippedRect) {
-      throw new Error('The requested element is not visible in the current viewport.');
-    }
-
-    const image = await this.pageView.webContents.capturePage({
-      x: clippedRect.x,
-      y: clippedRect.y,
-      width: clippedRect.width,
-      height: clippedRect.height,
+    await this.executePageScroll({
+      selector,
+      block: 'center',
     });
 
-    return this.serializeScreenshotImage({
-      image,
+    const elementBox = await this.snapshotElementBox(selector);
+    if (elementBox.width <= 0 || elementBox.height <= 0) {
+      throw new Error('The requested element is not currently visible.');
+    }
+
+    return this.capturePageClipScreenshot({
+      clip: {
+        x: elementBox.pageX,
+        y: elementBox.pageY,
+        width: elementBox.width,
+        height: elementBox.height,
+      },
       target: 'element',
       format,
       quality: request.quality,
       fileNameHint: request.fileNameHint ?? selector,
-      fallbackPixelSize: {
-        width: clippedRect.pixelWidth,
-        height: clippedRect.pixelHeight,
-      },
     });
   }
 
@@ -1548,13 +1668,17 @@ export class BrowserShell {
           return {
             ok: true,
             box: {
-              x: Number(rect.x.toFixed(2)),
-              y: Number(rect.y.toFixed(2)),
+              viewportX: Number(rect.x.toFixed(2)),
+              viewportY: Number(rect.y.toFixed(2)),
+              pageX: Number((rect.x + window.scrollX).toFixed(2)),
+              pageY: Number((rect.y + window.scrollY).toFixed(2)),
               width: Number(rect.width.toFixed(2)),
               height: Number(rect.height.toFixed(2)),
               devicePixelRatio: window.devicePixelRatio,
               viewportWidth: window.innerWidth,
               viewportHeight: window.innerHeight,
+              scrollX: Number(window.scrollX.toFixed(2)),
+              scrollY: Number(window.scrollY.toFixed(2)),
             },
           };
         } catch (error) {
@@ -1571,6 +1695,130 @@ export class BrowserShell {
     }
 
     return payload.box;
+  }
+
+  private async captureFullPageScreenshot(
+    format: ScreenshotFormat,
+    fileNameHint?: string,
+    quality?: number,
+  ): Promise<BrowserScreenshotCapture> {
+    const layoutMetrics = await this.withPageDebugger(async (debuggerSession) => {
+      await debuggerSession.sendCommand('Page.enable');
+      return debuggerSession.sendCommand('Page.getLayoutMetrics');
+    }) as {
+      cssContentSize?: { width: number; height: number };
+      contentSize?: { width: number; height: number };
+    };
+
+    const contentSize = layoutMetrics.cssContentSize ?? layoutMetrics.contentSize;
+    if (!contentSize) {
+      throw new Error('Could not determine the full page size.');
+    }
+
+    return this.capturePageClipScreenshot({
+      clip: {
+        x: 0,
+        y: 0,
+        width: contentSize.width,
+        height: contentSize.height,
+      },
+      target: 'page',
+      format,
+      quality,
+      fileNameHint,
+      captureBeyondViewport: true,
+    });
+  }
+
+  private async capturePageClipScreenshot(options: {
+    clip: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    target: ScreenshotTarget;
+    format: ScreenshotFormat;
+    quality?: number;
+    fileNameHint?: string;
+    captureBeyondViewport?: boolean;
+  }): Promise<BrowserScreenshotCapture> {
+    const buffer = await this.capturePageClipBuffer({
+      clip: options.clip,
+      format: options.format,
+      quality: options.quality,
+      captureBeyondViewport: options.captureBeyondViewport ?? true,
+    });
+
+    return this.serializeEncodedScreenshot({
+      data: buffer,
+      target: options.target,
+      format: options.format,
+      fileNameHint: options.fileNameHint,
+      fallbackPixelSize: {
+        width: Math.max(Math.round(options.clip.width), 1),
+        height: Math.max(Math.round(options.clip.height), 1),
+      },
+    });
+  }
+
+  private async capturePageClipBuffer(options: {
+    clip: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    format: ScreenshotFormat;
+    quality?: number;
+    captureBeyondViewport: boolean;
+  }): Promise<Buffer> {
+    const captureResult = await this.withPageDebugger(async (debuggerSession) => {
+      await debuggerSession.sendCommand('Page.enable');
+      return debuggerSession.sendCommand('Page.captureScreenshot', {
+        format: options.format,
+        quality:
+          options.format === 'jpeg' ? this.normalizeJpegQuality(options.quality) : undefined,
+        fromSurface: true,
+        captureBeyondViewport: options.captureBeyondViewport,
+        clip: {
+          x: Number(options.clip.x.toFixed(2)),
+          y: Number(options.clip.y.toFixed(2)),
+          width: Math.max(Number(options.clip.width.toFixed(2)), 1),
+          height: Math.max(Number(options.clip.height.toFixed(2)), 1),
+          scale: 1,
+        },
+      });
+    }) as { data?: string };
+
+    if (typeof captureResult.data !== 'string' || captureResult.data.length === 0) {
+      throw new Error('The screenshot capture returned an empty payload.');
+    }
+
+    return Buffer.from(captureResult.data, 'base64');
+  }
+
+  private async withPageDebugger<T>(
+    callback: (debuggerSession: Electron.Debugger) => Promise<T>,
+  ): Promise<T> {
+    if (!this.pageView) {
+      throw new Error('Page view is not ready.');
+    }
+
+    const debuggerSession = this.pageView.webContents.debugger;
+    const alreadyAttached = debuggerSession.isAttached();
+
+    if (!alreadyAttached) {
+      debuggerSession.attach('1.3');
+    }
+
+    try {
+      return await callback(debuggerSession);
+    } finally {
+      if (!alreadyAttached && debuggerSession.isAttached()) {
+        debuggerSession.detach();
+      }
+    }
   }
 
   private serializeScreenshotImage(options: {
@@ -1596,6 +1844,34 @@ export class BrowserShell {
       format: options.format,
       mimeType: getMimeTypeForFormat(options.format),
       data,
+      pixelWidth: imageSize.width,
+      pixelHeight: imageSize.height,
+      fileNameHint: sanitizeFileNameHint(options.fileNameHint, options.target),
+    };
+  }
+
+  private serializeEncodedScreenshot(options: {
+    data: Buffer;
+    target: ScreenshotTarget;
+    format: ScreenshotFormat;
+    fileNameHint?: string;
+    fallbackPixelSize?: { width: number; height: number };
+  }): BrowserScreenshotCapture {
+    if (options.data.length === 0) {
+      throw new Error('The screenshot capture returned an empty image.');
+    }
+
+    const image = nativeImage.createFromBuffer(options.data);
+    if (image.isEmpty()) {
+      throw new Error('The screenshot capture returned an unreadable image.');
+    }
+
+    const imageSize = this.getImagePixelSize(image, options.fallbackPixelSize);
+    return {
+      target: options.target,
+      format: options.format,
+      mimeType: getMimeTypeForFormat(options.format),
+      data: options.data,
       pixelWidth: imageSize.width,
       pixelHeight: imageSize.height,
       fileNameHint: sanitizeFileNameHint(options.fileNameHint, options.target),

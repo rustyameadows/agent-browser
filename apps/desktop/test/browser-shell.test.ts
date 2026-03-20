@@ -12,6 +12,14 @@ import {
 } from '@agent-browser/protocol';
 import { app, dialog, nativeImage } from 'electron';
 
+const createMockNativeImage = (width = 1, height = 1) => ({
+  isEmpty: () => false,
+  toJPEG: () => Buffer.from('jpeg'),
+  toPNG: () => Buffer.from('png'),
+  getSize: () => ({ width, height }),
+  getScaleFactors: () => [1],
+});
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn((command: string, args: string[], callback: (error: Error | null) => void) => {
     if (command === 'qlmanage') {
@@ -39,6 +47,7 @@ vi.mock('electron', () => ({
       setIcon: vi.fn(),
       show: vi.fn(),
     },
+    focus: vi.fn(),
     getAppPath: () => '/tmp/app',
     getPath: () => '/tmp/user-data',
     isPackaged: false,
@@ -67,15 +76,9 @@ vi.mock('electron', () => ({
     openExternal: vi.fn(),
   },
   nativeImage: {
-    createFromBitmap: vi.fn(() => ({
-      isEmpty: () => false,
-    })),
-    createFromBuffer: vi.fn(() => ({
-      isEmpty: () => false,
-    })),
-    createFromDataURL: vi.fn(() => ({
-      isEmpty: () => false,
-    })),
+    createFromBitmap: vi.fn(() => createMockNativeImage()),
+    createFromBuffer: vi.fn(() => createMockNativeImage()),
+    createFromDataURL: vi.fn(() => createMockNativeImage()),
   },
 }));
 
@@ -83,24 +86,60 @@ import { BrowserShell } from '../src/main/browser-shell';
 
 const tempDirs: string[] = [];
 
-const createFakePanelView = () => ({
-  setBounds: vi.fn(),
-  webContents: {
-    id: Math.floor(Math.random() * 1000) + 1,
-    isDestroyed: () => false,
-    loadURL: vi.fn(async () => undefined),
-    reload: vi.fn(),
-    stop: vi.fn(),
-    send: vi.fn(),
-    getURL: () => 'https://example.com',
-    getTitle: () => 'Example Domain',
-    isLoading: () => false,
-    navigationHistory: {
-      canGoBack: () => false,
-      canGoForward: () => false,
+const createFakePanelView = () => {
+  const debuggerSession = {
+    isAttached: vi.fn(() => false),
+    attach: vi.fn(),
+    detach: vi.fn(),
+    sendCommand: vi.fn(async (command: string) => {
+      if (command === 'Page.getLayoutMetrics') {
+        return {
+          cssContentSize: {
+            width: 1280,
+            height: 2400,
+          },
+        };
+      }
+
+      if (command === 'Page.captureScreenshot') {
+        return {
+          data: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn8pJkAAAAASUVORK5CYII=',
+            'base64',
+          ).toString('base64'),
+        };
+      }
+
+      return {};
+    }),
+  };
+
+  return {
+    setBounds: vi.fn(),
+    getBounds: () => ({ x: 0, y: 152, width: 1280, height: 720 }),
+    webContents: {
+      id: Math.floor(Math.random() * 1000) + 1,
+      isDestroyed: () => false,
+      loadURL: vi.fn(async () => undefined),
+      reload: vi.fn(),
+      stop: vi.fn(),
+      send: vi.fn(),
+      getURL: () => 'https://example.com',
+      getTitle: () => 'Example Domain',
+      isLoading: () => false,
+      capturePage: vi.fn(async () => nativeImage.createFromBuffer(Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn8pJkAAAAASUVORK5CYII=',
+        'base64',
+      ))),
+      executeJavaScript: vi.fn(async () => ({})),
+      debugger: debuggerSession,
+      navigationHistory: {
+        canGoBack: () => false,
+        canGoForward: () => false,
+      },
     },
-  },
-});
+  };
+};
 
 const createProjectAppearanceRuntime = () => {
   let state = {
@@ -537,6 +576,172 @@ describe('BrowserShell', () => {
     await subject.loadInitialPage();
 
     expect(subject.pageView.webContents.loadURL).toHaveBeenCalledWith('http://127.0.0.1:3000/');
+  });
+
+  it('scrolls the page to a selector and returns scroll state', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness;
+
+    subject.pageView = createFakePanelView();
+    subject.pageView.webContents.executeJavaScript = vi.fn(async () => ({
+      ok: true,
+      result: {
+        scrollX: 0,
+        scrollY: 920,
+        maxScrollX: 0,
+        maxScrollY: 2800,
+        url: 'https://example.com/deadlines',
+      },
+    }));
+
+    const result = await shell.scrollPage({
+      selector: '.ph-deadlines-secondary-grid',
+      block: 'center',
+    });
+
+    expect(result).toEqual({
+      scrollX: 0,
+      scrollY: 920,
+      maxScrollX: 0,
+      maxScrollY: 2800,
+      url: 'https://example.com/deadlines',
+    });
+    expect(subject.pageView.webContents.executeJavaScript).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto-scrolls below-the-fold elements before capturing an element screenshot', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness;
+
+    subject.pageView = createFakePanelView();
+    subject.pageView.webContents.executeJavaScript = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        result: {
+          scrollX: 0,
+          scrollY: 1200,
+          maxScrollX: 0,
+          maxScrollY: 2800,
+          url: 'https://example.com/deadlines',
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        box: {
+          viewportX: 24,
+          viewportY: 620,
+          pageX: 24,
+          pageY: 1820,
+          width: 420,
+          height: 260,
+          devicePixelRatio: 2,
+          viewportWidth: 1280,
+          viewportHeight: 720,
+          scrollX: 0,
+          scrollY: 1200,
+        },
+      });
+
+    const sendCommand = subject.pageView.webContents.debugger.sendCommand as ReturnType<typeof vi.fn>;
+    sendCommand.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === 'Page.captureScreenshot') {
+        expect(payload).toMatchObject({
+          clip: {
+            x: 24,
+            y: 1820,
+            width: 420,
+            height: 260,
+            scale: 1,
+          },
+          captureBeyondViewport: true,
+        });
+        return {
+          data: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn8pJkAAAAASUVORK5CYII=',
+            'base64',
+          ).toString('base64'),
+        };
+      }
+
+      return {};
+    });
+
+    const screenshot = await shell.captureScreenshot({
+      target: 'element',
+      selector: '.ph-deadlines-secondary-grid',
+    });
+
+    expect(subject.pageView.webContents.executeJavaScript).toHaveBeenCalledTimes(2);
+    expect(screenshot.target).toBe('element');
+    expect(sendCommand).toHaveBeenCalledWith('Page.enable');
+    expect(sendCommand).toHaveBeenCalledWith(
+      'Page.captureScreenshot',
+      expect.objectContaining({
+        captureBeyondViewport: true,
+      }),
+    );
+  });
+
+  it('captures true full-page screenshots with the debugger path', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness;
+
+    subject.pageView = createFakePanelView();
+    const sendCommand = subject.pageView.webContents.debugger.sendCommand as ReturnType<typeof vi.fn>;
+    sendCommand.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === 'Page.getLayoutMetrics') {
+        return {
+          cssContentSize: {
+            width: 1280,
+            height: 3200,
+          },
+        };
+      }
+
+      if (command === 'Page.captureScreenshot') {
+        expect(payload).toMatchObject({
+          captureBeyondViewport: true,
+          clip: {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 3200,
+            scale: 1,
+          },
+        });
+        return {
+          data: Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn8pJkAAAAASUVORK5CYII=',
+            'base64',
+          ).toString('base64'),
+        };
+      }
+
+      return {};
+    });
+
+    const screenshot = await shell.captureScreenshot({
+      target: 'page',
+      fullPage: true,
+      fileNameHint: 'deadlines-full',
+    });
+
+    expect(screenshot.target).toBe('page');
+    expect(screenshot.fileNameHint).toBe('deadlines-full');
+    expect(sendCommand).toHaveBeenCalledWith('Page.getLayoutMetrics');
+    expect(sendCommand).toHaveBeenCalledWith(
+      'Page.captureScreenshot',
+      expect.objectContaining({
+        captureBeyondViewport: true,
+      }),
+    );
   });
 
   it('exposes Use Agent Login CTA state on matching login pages', () => {

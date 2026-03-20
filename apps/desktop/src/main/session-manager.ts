@@ -14,6 +14,8 @@ import type { BrowserShell } from './browser-shell';
 const SESSION_RECORD_VERSION = 1;
 const SESSION_SCAN_INTERVAL_MS = 350;
 const SESSION_START_TIMEOUT_MS = 30_000;
+const SESSION_FOCUS_TIMEOUT_MS = 2_000;
+const SESSION_FOCUS_POLL_MS = 100;
 
 export const LOOP_BROWSER_CLUSTER_DIR_ENV = 'LOOP_BROWSER_CLUSTER_DIR';
 export const LOOP_BROWSER_ROLE_ENV = 'LOOP_BROWSER_ROLE';
@@ -129,6 +131,7 @@ export class ProjectSessionAdvertiser {
   private disposed = false;
   private lastSerialized = '';
   private status: SessionSummary['status'] = 'launching';
+  private focusUnsubscribe: (() => void) | null = null;
 
   constructor(
     private readonly options: {
@@ -142,6 +145,9 @@ export class ProjectSessionAdvertiser {
 
   async start(): Promise<void> {
     await fs.mkdir(sessionRegistryDir(this.options.clusterDir), { recursive: true });
+    this.focusUnsubscribe = this.options.browserShell.subscribeWindowFocus(() => {
+      void this.writeSnapshot();
+    });
     this.status = 'ready';
     await this.writeSnapshot();
     this.timer = setInterval(() => {
@@ -152,6 +158,8 @@ export class ProjectSessionAdvertiser {
   async stop(status: SessionSummary['status'] = 'closing'): Promise<void> {
     this.status = status;
     this.disposed = true;
+    this.focusUnsubscribe?.();
+    this.focusUnsubscribe = null;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -472,7 +480,18 @@ export class SessionDirectoryController {
       currentSessionId: sessionId,
     };
     await fetchJsonRpc(record.connection.url, record.connection.token, 'internal/sessionFocus', {});
-    await this.refresh();
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < SESSION_FOCUS_TIMEOUT_MS) {
+      await this.refresh();
+      const focusedRecord = this.sessionRecords.get(sessionId);
+      if (focusedRecord?.summary.isFocused) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, SESSION_FOCUS_POLL_MS));
+    }
+
+    throw new Error(`Timed out waiting for session ${sessionId} to report focus.`);
   }
 
   async closeSession(sessionId: string): Promise<void> {

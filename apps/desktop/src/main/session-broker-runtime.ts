@@ -4,6 +4,8 @@ import type {
   FeedbackCommand,
   FeedbackState,
   MarkdownViewState,
+  PageScrollRequest,
+  PageScrollResult,
   NavigationCommand,
   NavigationState,
   PickerCommand,
@@ -160,6 +162,15 @@ export class SessionBrokerRuntime implements ToolServerRuntime {
   ): Promise<MarkdownViewState> {
     return Promise.reject(
       new Error('Session broker routes markdown requests through proxyToolCall.'),
+    );
+  }
+
+  executePageScroll(
+    _request: PageScrollRequest,
+    _sessionId?: string,
+  ): Promise<PageScrollResult> {
+    return Promise.reject(
+      new Error('Session broker routes page scroll requests through proxyToolCall.'),
     );
   }
 

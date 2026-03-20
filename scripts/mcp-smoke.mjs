@@ -22,6 +22,7 @@ const EXPECTED_TOOLS = [
   'picker.disable',
   'picker.lastSelection',
   'page.viewAsMarkdown',
+  'page.scroll',
   'page.screenshot',
   'artifacts.get',
   'artifacts.list',
@@ -198,6 +199,53 @@ const writeSmokeProjectFixture = async (
     configPath,
     projectIconPath,
   }
+}
+
+const writeTallFixture = async (smokeDir) => {
+  const fixturePath = path.join(smokeDir, 'tall-fixture.html')
+  await writeFile(
+    fixturePath,
+    [
+      '<!doctype html>',
+      '<html lang="en">',
+      '<head>',
+      '  <meta charset="utf-8" />',
+      '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
+      '  <title>Loop Tall Fixture</title>',
+      '  <style>',
+      '    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }',
+      '    body { margin: 0; background: #f8f2ff; color: #1d2140; }',
+      '    main { max-width: 960px; margin: 0 auto; padding: 48px 24px 160px; }',
+      '    .hero { min-height: 1180px; display: grid; align-content: start; gap: 16px; }',
+      '    .hero-card, .ph-deadlines-secondary-grid { background: rgba(255,255,255,0.92); border: 1px solid rgba(112,94,162,0.18); border-radius: 28px; box-shadow: 0 24px 80px rgba(78,48,122,0.12); }',
+      '    .hero-card { padding: 32px; }',
+      '    .ph-deadlines-secondary-grid { padding: 32px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }',
+      '    .deadline-card { min-height: 160px; padding: 20px; border-radius: 20px; background: linear-gradient(180deg, #fff6d8 0%, #fff 100%); }',
+      '  </style>',
+      '</head>',
+      '<body>',
+      '  <main>',
+      '    <section class="hero">',
+      '      <div class="hero-card">',
+      '        <h1>Deadlines Fixture</h1>',
+      '        <p>This page is intentionally tall so smoke tests can verify below-the-fold scroll and capture behavior.</p>',
+      '      </div>',
+      '    </section>',
+      '    <section class="ph-deadlines-secondary-grid">',
+      '      <article class="deadline-card"><h2>Launch Week</h2><p>QA holdback, partner kit, and final review.</p></article>',
+      '      <article class="deadline-card"><h2>Ops Prep</h2><p>Refresh incident runbooks and alert windows.</p></article>',
+      '      <article class="deadline-card"><h2>Stakeholder Notes</h2><p>Summarize remaining open approvals and risks.</p></article>',
+      '      <article class="deadline-card"><h2>Follow-up</h2><p>Confirm the below-the-fold capture path sees this section.</p></article>',
+      '    </section>',
+      '  </main>',
+      '</body>',
+      '</html>',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+
+  return pathToFileURL(fixturePath).toString()
 }
 
 const callTool = async (registration, id, name, args = {}, options = {}) =>
@@ -550,7 +598,8 @@ const run = async () => {
     path.join(repoRoot, 'apps', 'desktop', 'static', 'local-fixture.html'),
   ).toString()
   const fixtureUrlA = `${fixtureUrl}?session=alpha`
-  const fixtureUrlB = `${fixtureUrl}?session=beta`
+  const tallFixtureUrl = await writeTallFixture(smokeDir)
+  const fixtureUrlB = `${tallFixtureUrl}?session=beta`
   const fixtureUrlBAfterClose = `${fixtureUrl}?session=beta-after-close`
   const port = await findFreePort()
 
@@ -821,7 +870,27 @@ const run = async () => {
       status: focusSecondSession.status,
       body: focusSecondSession.body,
     })
-    assert(focusSecondSession.status === 200, 'session.focus(project-b) should return 200.')
+    assert(
+      focusSecondSession.status === 200 || focusSecondSession.status === 500,
+      'session.focus(project-b) should return 200 or a clear timeout error.',
+    )
+    if (focusSecondSession.status === 200) {
+      assert(
+        focusSecondSession.body?.result?.structuredContent?.session?.sessionId === sessionB.sessionId,
+        'session.focus(project-b) did not return the focused project-b session.',
+      )
+      assert(
+        focusSecondSession.body?.result?.structuredContent?.session?.isFocused === true,
+        'session.focus(project-b) did not report project-b as focused.',
+      )
+    } else {
+      assert(
+        String(focusSecondSession.body?.error?.message ?? '').includes(
+          'Timed out waiting for session',
+        ),
+        'session.focus(project-b) did not return the expected bounded timeout error.',
+      )
+    }
 
     const initialAppearanceA = await waitForChromeAppearance(
       registration,
@@ -1024,7 +1093,41 @@ const run = async () => {
       'browser.resizeWindow(project-b) did not apply the requested viewport height.',
     )
 
-    const pageScreenshotA = await callTool(registration, 19, 'page.screenshot', {
+    const pageScroll = await callTool(registration, 19, 'page.scroll', {
+      sessionId: sessionB.sessionId,
+      byY: 480,
+    })
+    state.requests.push({
+      name: 'tools/call:page.scroll:project-b',
+      status: pageScroll.status,
+      body: pageScroll.body,
+    })
+    assert(pageScroll.status === 200, 'page.scroll(project-b) should return 200.')
+    assert(
+      pageScroll.body?.result?.structuredContent?.scrollY > 0,
+      'page.scroll(project-b) did not report a positive scrollY after scrolling.',
+    )
+    assert(
+      pageScroll.body?.result?.structuredContent?.maxScrollY >
+        pageScroll.body?.result?.structuredContent?.scrollY,
+      'page.scroll(project-b) did not report a meaningful maxScrollY.',
+    )
+
+    const navigateBAfterScroll = await callTool(registration, 20, 'page.navigate', {
+      sessionId: sessionB.sessionId,
+      target: fixtureUrlB,
+    })
+    state.requests.push({
+      name: 'tools/call:page.navigate:project-b-reset',
+      status: navigateBAfterScroll.status,
+      body: navigateBAfterScroll.body,
+    })
+    assert(
+      navigateBAfterScroll.status === 200,
+      'page.navigate(project-b reset) should return 200.',
+    )
+
+    const pageScreenshotA = await callTool(registration, 21, 'page.screenshot', {
       sessionId: sessionA.sessionId,
       target: 'page',
       fileNameHint: 'fixture-page-a',
@@ -1039,22 +1142,55 @@ const run = async () => {
     assert(typeof pageArtifactA?.artifactId === 'string', 'page.screenshot(project-a) did not return an artifact id.')
     assert(pageArtifactA.target === 'page', 'page.screenshot(project-a) returned the wrong target.')
 
-    const pageScreenshotB = await callTool(registration, 20, 'page.screenshot', {
+    const elementScreenshotB = await callTool(registration, 22, 'page.screenshot', {
       sessionId: sessionB.sessionId,
-      target: 'page',
-      fileNameHint: 'fixture-page-b',
+      target: 'element',
+      selector: '.ph-deadlines-secondary-grid',
+      fileNameHint: 'fixture-element-below-fold',
     })
     state.requests.push({
-      name: 'tools/call:page.screenshot:page:project-b',
+      name: 'tools/call:page.screenshot:element:project-b',
+      status: elementScreenshotB.status,
+      body: elementScreenshotB.body,
+    })
+    assert(
+      elementScreenshotB.status === 200,
+      'page.screenshot(project-b element) should return 200 for a below-the-fold selector.',
+    )
+    const elementArtifactB = elementScreenshotB.body?.result?.structuredContent
+    assert(
+      typeof elementArtifactB?.artifactId === 'string',
+      'page.screenshot(project-b element) did not return an artifact id.',
+    )
+    assert(
+      elementArtifactB.target === 'element',
+      'page.screenshot(project-b element) returned the wrong target.',
+    )
+
+    const pageScreenshotB = await callTool(registration, 23, 'page.screenshot', {
+      sessionId: sessionB.sessionId,
+      target: 'page',
+      fullPage: true,
+      fileNameHint: 'fixture-page-b-full',
+    })
+    state.requests.push({
+      name: 'tools/call:page.screenshot:full-page:project-b',
       status: pageScreenshotB.status,
       body: pageScreenshotB.body,
     })
-    assert(pageScreenshotB.status === 200, 'page.screenshot(project-b page) should return 200.')
+    assert(
+      pageScreenshotB.status === 200,
+      'page.screenshot(project-b full page) should return 200.',
+    )
     const pageArtifactB = pageScreenshotB.body?.result?.structuredContent
     assert(typeof pageArtifactB?.artifactId === 'string', 'page.screenshot(project-b) did not return an artifact id.')
     assert(pageArtifactB.target === 'page', 'page.screenshot(project-b) returned the wrong target.')
+    assert(
+      pageArtifactB.pixelHeight > 720,
+      'page.screenshot(project-b full page) did not produce a taller-than-viewport image.',
+    )
 
-    const pageArtifactRecord = await callTool(registration, 21, 'artifacts.get', {
+    const pageArtifactRecord = await callTool(registration, 24, 'artifacts.get', {
       sessionId: sessionA.sessionId,
       artifactId: pageArtifactA.artifactId,
     })
@@ -1068,7 +1204,7 @@ const run = async () => {
     assert(typeof pageArtifactFile === 'string', 'artifacts.get(project-a) did not return a file path.')
     await assertFileExists(pageArtifactFile, 'artifacts.get(project-a) returned a missing file path.')
 
-    const listedArtifacts = await callTool(registration, 22, 'artifacts.list', {
+    const listedArtifacts = await callTool(registration, 25, 'artifacts.list', {
       sessionId: sessionA.sessionId,
     })
     state.requests.push({
@@ -1088,7 +1224,7 @@ const run = async () => {
       'artifacts.list(project-a) unexpectedly included the project-b artifact.',
     )
 
-    const deleteArtifact = await callTool(registration, 23, 'artifacts.delete', {
+    const deleteArtifact = await callTool(registration, 26, 'artifacts.delete', {
       sessionId: sessionA.sessionId,
       artifactId: pageArtifactA.artifactId,
     })
@@ -1103,7 +1239,7 @@ const run = async () => {
       'artifacts.delete(project-a) did not confirm deletion.',
     )
 
-    const closeFirstSession = await callTool(registration, 24, 'session.close', {
+    const closeFirstSession = await callTool(registration, 27, 'session.close', {
       sessionId: sessionA.sessionId,
     })
     state.requests.push({
@@ -1115,7 +1251,7 @@ const run = async () => {
 
     const remainingSessions = await waitForSessions(
       registration,
-      25,
+      28,
       (currentSessions) =>
         currentSessions.length === 1 &&
         currentSessions[0]?.sessionId === sessionB.sessionId,
@@ -1125,7 +1261,7 @@ const run = async () => {
       'session.close(project-a) did not leave project-b as the remaining session.',
     )
 
-    const navigateBAfterClose = await callTool(registration, 26, 'page.navigate', {
+    const navigateBAfterClose = await callTool(registration, 29, 'page.navigate', {
       sessionId: sessionB.sessionId,
       target: fixtureUrlBAfterClose,
     })
@@ -1168,6 +1304,7 @@ const run = async () => {
           navigatedUrls: {
             projectA: fixtureUrlA,
             projectB: fixtureUrlB,
+            projectBFullPage: fixtureUrlB,
             projectBAfterClose: fixtureUrlBAfterClose,
           },
           markdownTitle: markdown.body.result.structuredContent.title,

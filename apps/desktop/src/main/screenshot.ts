@@ -19,24 +19,19 @@ export interface ViewportRect extends WindowRect {
   deviceScaleFactor: number;
 }
 
-export interface ElementCaptureRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  pixelWidth: number;
-  pixelHeight: number;
-}
-
 export interface ElementBox {
-  x: number;
-  y: number;
+  viewportX: number;
+  viewportY: number;
+  pageX: number;
+  pageY: number;
   width: number;
   height: number;
   devicePixelRatio: number;
   viewportWidth: number;
   viewportHeight: number;
-}
+  scrollX: number;
+  scrollY: number;
+};
 
 const clampDimension = (value: number): number => Math.max(Math.round(value), 1);
 
@@ -68,28 +63,6 @@ export const computeContentSizeForResize = (options: {
   return {
     width: contentWidth,
     height: height + CHROME_HEIGHT,
-  };
-};
-
-export const clipElementToViewport = (box: ElementBox): ElementCaptureRect | null => {
-  const left = Math.max(0, box.x);
-  const top = Math.max(0, box.y);
-  const right = Math.min(box.viewportWidth, box.x + box.width);
-  const bottom = Math.min(box.viewportHeight, box.y + box.height);
-  const clippedWidth = right - left;
-  const clippedHeight = bottom - top;
-
-  if (clippedWidth <= 0 || clippedHeight <= 0) {
-    return null;
-  }
-
-  return {
-    x: Math.round(left),
-    y: Math.round(top),
-    width: Math.round(clippedWidth),
-    height: Math.round(clippedHeight),
-    pixelWidth: Math.max(Math.round(clippedWidth * box.devicePixelRatio), 1),
-    pixelHeight: Math.max(Math.round(clippedHeight * box.devicePixelRatio), 1),
   };
 };
 

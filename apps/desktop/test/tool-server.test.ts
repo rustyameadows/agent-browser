@@ -29,6 +29,9 @@ describe('ToolServer', () => {
     let lastNavigationAction: string | null = null;
     let lastNavigationTarget: string | null = null;
     let lastResizeTarget: { width: number; height: number; target?: string } | null = null;
+    let lastScrollRequest:
+      | { selector?: string; block?: string; byX?: number; byY?: number }
+      | null = null;
     let chromeAppearanceState = {
       ...createEmptyChromeAppearanceState(),
       projectRoot: '/tmp/project',
@@ -234,6 +237,16 @@ describe('ToolServer', () => {
           site: 'example.com',
           wordCount: 2,
         }),
+        executePageScroll: async (request) => {
+          lastScrollRequest = request;
+          return {
+            scrollX: request.byX ?? 0,
+            scrollY: request.byY ?? 480,
+            maxScrollX: 1200,
+            maxScrollY: 3600,
+            url: 'https://example.com/tall',
+          };
+        },
         getWindowState: () => ({
           outerBounds: { x: 20, y: 20, width: 1480, height: 960 },
           contentBounds: { x: 20, y: 48, width: 1480, height: 932 },
@@ -283,6 +296,7 @@ describe('ToolServer', () => {
     const connection = await server.start();
     expect(server.getDiagnostics().lifecycle).toBe('listening');
     expect(server.getDiagnostics().tools).toContain('page.viewAsMarkdown');
+    expect(server.getDiagnostics().tools).toContain('page.scroll');
     expect(server.getDiagnostics().tools).toContain('chrome.getAppearance');
 
     const unauthorized = await fetch(connection.url, {
@@ -368,6 +382,7 @@ describe('ToolServer', () => {
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('feedback.getState');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('feedback.progress');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.viewAsMarkdown');
+    expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.scroll');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.screenshot');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('artifacts.get');
 
@@ -899,6 +914,44 @@ describe('ToolServer', () => {
       height: 640,
     });
 
+    const scrollResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'page-scroll',
+        method: 'tools/call',
+        params: {
+          name: 'page.scroll',
+          arguments: {
+            selector: '.deadlines-grid',
+            block: 'center',
+          },
+        },
+      }),
+    });
+
+    const scrollPayload = (await scrollResponse.json()) as {
+      result: {
+        structuredContent: {
+          scrollY: number;
+          maxScrollY: number;
+          url: string;
+        };
+      };
+    };
+    expect(scrollResponse.status).toBe(200);
+    expect(lastScrollRequest).toEqual({
+      selector: '.deadlines-grid',
+      block: 'center',
+    });
+    expect(scrollPayload.result.structuredContent.scrollY).toBe(480);
+    expect(scrollPayload.result.structuredContent.maxScrollY).toBe(3600);
+    expect(scrollPayload.result.structuredContent.url).toBe('https://example.com/tall');
+
     const pageScreenshotResponse = await fetch(connection.url, {
       method: 'POST',
       headers: {
@@ -913,6 +966,7 @@ describe('ToolServer', () => {
           name: 'page.screenshot',
           arguments: {
             target: 'page',
+            fullPage: true,
             fileNameHint: 'fixture-page',
           },
         },
@@ -1129,6 +1183,13 @@ describe('ToolServer', () => {
         executeFeedbackCommand: async () => createEmptyFeedbackState(),
         getFeedbackState: () => createEmptyFeedbackState(),
         getMarkdownForCurrentPage: async () => createEmptyMarkdownViewState(),
+        executePageScroll: async () => ({
+          scrollX: 0,
+          scrollY: 0,
+          maxScrollX: 0,
+          maxScrollY: 0,
+          url: 'https://example.com',
+        }),
         getWindowState: () => ({
           outerBounds: { x: 0, y: 0, width: 1200, height: 800 },
           contentBounds: { x: 0, y: 24, width: 1200, height: 776 },
@@ -1203,6 +1264,13 @@ describe('ToolServer', () => {
         executeFeedbackCommand: async () => createEmptyFeedbackState(),
         getFeedbackState: () => createEmptyFeedbackState(),
         getMarkdownForCurrentPage: async () => createEmptyMarkdownViewState(),
+        executePageScroll: async () => ({
+          scrollX: 0,
+          scrollY: 0,
+          maxScrollX: 0,
+          maxScrollY: 0,
+          url: 'https://example.com',
+        }),
         getWindowState: () => ({
           outerBounds: { x: 0, y: 0, width: 1200, height: 800 },
           contentBounds: { x: 0, y: 24, width: 1200, height: 776 },
@@ -1440,6 +1508,13 @@ describe('ToolServer', () => {
         executeFeedbackCommand: async () => createEmptyFeedbackState(),
         getFeedbackState: () => createEmptyFeedbackState(),
         getMarkdownForCurrentPage: async () => createEmptyMarkdownViewState(),
+        executePageScroll: async () => ({
+          scrollX: 0,
+          scrollY: 0,
+          maxScrollX: 0,
+          maxScrollY: 0,
+          url: 'https://example.com',
+        }),
         getWindowState: () => ({
           outerBounds: { x: 0, y: 0, width: 1200, height: 800 },
           contentBounds: { x: 0, y: 24, width: 1200, height: 776 },
