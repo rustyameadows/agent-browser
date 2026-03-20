@@ -220,6 +220,38 @@ const makeNotification = async (registration, method, params) => {
   })
 }
 
+const waitForChromeAppearance = async (
+  registration,
+  id,
+  predicate,
+  timeoutMs = 10_000,
+  intervalMs = 250,
+) => {
+  const startedAt = Date.now()
+  let lastResponse = null
+
+  while (Date.now() - startedAt < timeoutMs) {
+    lastResponse = await makeRpcRequest(
+      registration,
+      'tools/call',
+      {
+        name: 'chrome.getAppearance',
+        arguments: {},
+      },
+      id,
+    )
+
+    const appearance = lastResponse.body?.result?.structuredContent?.appearance
+    if (predicate(appearance)) {
+      return lastResponse
+    }
+
+    await sleep(intervalMs)
+  }
+
+  return lastResponse
+}
+
 const findWorkspaceBinary = async () => {
   const electronBinary = path.join(
     repoRoot,
@@ -458,14 +490,10 @@ const run = async () => {
       assert(toolNames.includes(toolName), `tools/list did not include ${toolName}.`)
     }
 
-    const initialAppearance = await makeRpcRequest(
+    const initialAppearance = await waitForChromeAppearance(
       registration,
-      'tools/call',
-      {
-        name: 'chrome.getAppearance',
-        arguments: {},
-      },
       3,
+      (appearance) => appearance?.dockIconStatus !== 'idle',
     )
     state.requests.push({
       name: 'tools/call:chrome.getAppearance',

@@ -1,4 +1,8 @@
+import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { nativeImage, type NativeImage } from 'electron';
 import { DEFAULT_CHROME_COLOR } from '@agent-browser/protocol';
 
@@ -18,13 +22,9 @@ export const dockIconTemplatePath = ({
     : path.join(appPath, 'static', 'dock-icon-template.svg');
 
 const ICON_SIZE = 512;
-const OUTER_INSET = 16;
-const OUTER_RADIUS = 116;
-const IMAGE_INSET = 76;
-const IMAGE_SIZE = 360;
-const IMAGE_RADIUS = 88;
 export const DEFAULT_DOCK_ICON_COLOR = '#000000';
 const BYTES_PER_PIXEL = 4;
+const execFileAsync = promisify(execFile);
 
 const toDataUrl = (mimeType: string, buffer: Buffer): string =>
   `data:${mimeType};base64,${buffer.toString('base64')}`;
@@ -41,55 +41,10 @@ const parseHexColor = (hexColor: string): { red: number; green: number; blue: nu
 export const resolveDefaultDockIconColor = (chromeColor: string): string =>
   chromeColor === DEFAULT_CHROME_COLOR ? DEFAULT_DOCK_ICON_COLOR : chromeColor;
 
-const buildDockIconSvg = (chromeColor: string, projectImageDataUrl: string | null): string => `
-  <svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 ${ICON_SIZE} ${ICON_SIZE}">
-    <defs>
-      <clipPath id="project-mask">
-        <rect x="${IMAGE_INSET}" y="${IMAGE_INSET}" width="${IMAGE_SIZE}" height="${IMAGE_SIZE}" rx="${IMAGE_RADIUS}" />
-      </clipPath>
-    </defs>
-    <rect x="${OUTER_INSET}" y="${OUTER_INSET}" width="${ICON_SIZE - OUTER_INSET * 2}" height="${ICON_SIZE - OUTER_INSET * 2}" rx="${OUTER_RADIUS}" fill="${chromeColor}" />
-    ${
-      projectImageDataUrl
-        ? `<image href="${projectImageDataUrl}" x="${IMAGE_INSET}" y="${IMAGE_INSET}" width="${IMAGE_SIZE}" height="${IMAGE_SIZE}" preserveAspectRatio="xMidYMid slice" clip-path="url(#project-mask)" />`
-        : ''
-    }
-  </svg>
-`;
+const IMAGE_SIZE = 360;
 
-const loadProjectIconImage = (projectIconPath: string): NativeImage => {
-  const projectIcon = nativeImage.createFromPath(projectIconPath);
-  if (projectIcon.isEmpty()) {
-    throw new Error(`Could not load project icon image: ${projectIconPath}`);
-  }
-
-  return projectIcon;
-};
-
-const readProjectImageDataUrl = async (projectIconPath: string): Promise<string> =>
-  loadProjectIconImage(projectIconPath)
-    .resize({
-      width: IMAGE_SIZE,
-      height: IMAGE_SIZE,
-      quality: 'best',
-    })
-    .toDataURL();
-
-export const composeProjectDockIcon = async (options: {
-  chromeColor: string;
-  projectIconPath: string;
-  templatePath: string;
-}): Promise<string> =>
-  toSvgDataUrl(
-    buildDockIconSvg(options.chromeColor, await readProjectImageDataUrl(options.projectIconPath)),
-  );
-
-export const composeDefaultDockIcon = async (options: {
-  chromeColor: string;
-  templatePath: string;
-}): Promise<NativeImage> => {
-  void options.templatePath;
-  const { red, green, blue } = parseHexColor(resolveDefaultDockIconColor(options.chromeColor));
+const createSolidDockBitmap = (hexColor: string): Buffer => {
+  const { red, green, blue } = parseHexColor(hexColor);
   const bitmap = Buffer.alloc(ICON_SIZE * ICON_SIZE * BYTES_PER_PIXEL);
   for (let index = 0; index < bitmap.length; index += BYTES_PER_PIXEL) {
     bitmap[index] = blue;
@@ -98,7 +53,129 @@ export const composeDefaultDockIcon = async (options: {
     bitmap[index + 3] = 0xff;
   }
 
-  return nativeImage.createFromBitmap(bitmap, {
+  return bitmap;
+};
+
+const rasterizeSvgProjectIcon = async (projectIconPath: string): Promise<NativeImage> => {
+  const outputDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'loop-browser-dock-icon-'));
+  const thumbnailPath = path.join(outputDirectory, `${path.basename(projectIconPath)}.png`);
+
+  try {
+    await execFileAsync('qlmanage', ['-t', '-s', String(ICON_SIZE), '-o', outputDirectory, projectIconPath]);
+    const thumbnailBuffer = await fs.readFile(thumbnailPath);
+    const thumbnail = nativeImage.createFromBuffer(thumbnailBuffer);
+    if (thumbnail.isEmpty()) {
+      throw new Error(`Quick Look produced an empty thumbnail for ${projectIconPath}`);
+    }
+
+    return thumbnail;
+  } finally {
+    await fs.rm(outputDirectory, { recursive: true, force: true });
+  }
+};
+
+const loadProjectIconImage = async (projectIconPath: string): Promise<NativeImage> => {
+  const extension = path.extname(projectIconPath).toLowerCase();
+  const projectIcon =
+    extension === '.svg' && process.platform === 'darwin'
+      ? await rasterizeSvgProjectIcon(projectIconPath)
+      : extension === '.svg'
+        ? nativeImage.createFromDataURL(
+            toDataUrl('image/svg+xml', Buffer.from(await fs.readFile(projectIconPath, 'utf8'), 'utf8')),
+          )
+        : nativeImage.createFromPath(projectIconPath);
+  if (projectIcon.isEmpty()) {
+    throw new Error(`Could not load project icon image: ${projectIconPath}`);
+  }
+
+  return projectIcon;
+};
+
+const alphaBlendChannel = (source: number, destination: number, alpha: number): number =>
+  Math.round(source * alpha + destination * (1 - alpha));
+
+const compositeBitmap = (
+  destinationBitmap: Buffer,
+  sourceBitmap: Buffer,
+  options: {
+    sourceWidth: number;
+    sourceHeight: number;
+    destinationX: number;
+    destinationY: number;
+  },
+): void => {
+  for (let y = 0; y < options.sourceHeight; y += 1) {
+    for (let x = 0; x < options.sourceWidth; x += 1) {
+      const sourceIndex = (y * options.sourceWidth + x) * BYTES_PER_PIXEL;
+      const destinationIndex =
+        ((options.destinationY + y) * ICON_SIZE + (options.destinationX + x)) * BYTES_PER_PIXEL;
+      const sourceAlpha = sourceBitmap[sourceIndex + 3] / 255;
+      if (sourceAlpha <= 0) {
+        continue;
+      }
+
+      destinationBitmap[destinationIndex] = alphaBlendChannel(
+        sourceBitmap[sourceIndex],
+        destinationBitmap[destinationIndex],
+        sourceAlpha,
+      );
+      destinationBitmap[destinationIndex + 1] = alphaBlendChannel(
+        sourceBitmap[sourceIndex + 1],
+        destinationBitmap[destinationIndex + 1],
+        sourceAlpha,
+      );
+      destinationBitmap[destinationIndex + 2] = alphaBlendChannel(
+        sourceBitmap[sourceIndex + 2],
+        destinationBitmap[destinationIndex + 2],
+        sourceAlpha,
+      );
+      destinationBitmap[destinationIndex + 3] = 0xff;
+    }
+  }
+};
+
+export const composeProjectDockIcon = async (options: {
+  chromeColor: string;
+  projectIconPath: string;
+  templatePath: string;
+}): Promise<NativeImage> => {
+  void options.templatePath;
+  const destinationBitmap = createSolidDockBitmap(options.chromeColor);
+  const projectIconImage = await loadProjectIconImage(options.projectIconPath);
+  const projectIconSize = projectIconImage.getSize();
+
+  if (projectIconSize.width <= 0 || projectIconSize.height <= 0) {
+    throw new Error(`Could not read project icon dimensions: ${options.projectIconPath}`);
+  }
+
+  const scale = Math.min(IMAGE_SIZE / projectIconSize.width, IMAGE_SIZE / projectIconSize.height);
+  const targetWidth = Math.max(1, Math.round(projectIconSize.width * scale));
+  const targetHeight = Math.max(1, Math.round(projectIconSize.height * scale));
+  const resizedProjectIcon = projectIconImage.resize({
+    width: targetWidth,
+    height: targetHeight,
+    quality: 'best',
+  });
+
+  compositeBitmap(destinationBitmap, resizedProjectIcon.toBitmap(), {
+    sourceWidth: targetWidth,
+    sourceHeight: targetHeight,
+    destinationX: Math.max(0, Math.round((ICON_SIZE - targetWidth) / 2)),
+    destinationY: Math.max(0, Math.round((ICON_SIZE - targetHeight) / 2)),
+  });
+
+  return nativeImage.createFromBitmap(destinationBitmap, {
+    width: ICON_SIZE,
+    height: ICON_SIZE,
+  });
+};
+
+export const composeDefaultDockIcon = async (options: {
+  chromeColor: string;
+  templatePath: string;
+}): Promise<NativeImage> => {
+  void options.templatePath;
+  return nativeImage.createFromBitmap(createSolidDockBitmap(resolveDefaultDockIconColor(options.chromeColor)), {
     width: ICON_SIZE,
     height: ICON_SIZE,
   });

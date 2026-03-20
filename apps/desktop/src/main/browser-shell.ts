@@ -1733,12 +1733,11 @@ export class BrowserShell {
     }
 
     try {
-      const dataUrl = await composeProjectDockIcon({
+      const icon = await composeProjectDockIcon({
         chromeColor: this.chromeAppearanceState.chromeColor,
         projectIconPath: iconPath,
         templatePath: this.projectDockTemplatePath,
       });
-      const icon = nativeImage.createFromDataURL(dataUrl);
       if (icon.isEmpty()) {
         throw new Error('Electron created an empty Dock icon from the composed project icon.');
       }

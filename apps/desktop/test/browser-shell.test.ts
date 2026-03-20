@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +10,24 @@ import {
   createEmptyMcpViewState,
 } from '@agent-browser/protocol';
 import { app, dialog, nativeImage } from 'electron';
+
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn((command: string, args: string[], callback: (error: Error | null) => void) => {
+    if (command === 'qlmanage') {
+      const outputDirectory = args[args.indexOf('-o') + 1];
+      const sourcePath = args[args.length - 1];
+      fs.writeFileSync(
+        path.join(outputDirectory, `${path.basename(sourcePath)}.png`),
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAWUlEQVR4nO3PQQ0AIBDAMMC/58MCP7KkVbDX1pk5A6QNaA3QGqA1QGuA1gCtAVoDtAZoDdAaoDVAb+BkYGBgYGBgYGBgYGBgYGBgYGBgYGBgYJgBQ7UCP6xF9WAAAAAASUVORK5CYII=',
+          'base64',
+        ),
+      );
+    }
+
+    callback(null);
+  }),
+}));
 
 vi.mock('electron', () => ({
   BaseWindow: class {},
