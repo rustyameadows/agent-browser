@@ -19,6 +19,9 @@ import {
   PICKER_COMMAND_CHANNEL,
   PICKER_GET_STATE_CHANNEL,
   PICKER_STATE_CHANNEL,
+  SESSION_COMMAND_CHANNEL,
+  SESSION_GET_STATE_CHANNEL,
+  SESSION_STATE_CHANNEL,
   type ChromeAppearanceCommand,
   type ChromeAppearanceState,
   type FeedbackCommand,
@@ -29,6 +32,8 @@ import {
   type MarkdownViewState,
   type NavigationBridge,
   type NavigationCommand,
+  type SessionCommand,
+  type SessionViewState,
   type PickerCommand,
   type PickerState,
   type NavigationState,
@@ -49,6 +54,22 @@ const navigationBridge: NavigationBridge = {
     ipcRenderer.on(NAVIGATION_STATE_CHANNEL, wrapped);
     return () => {
       ipcRenderer.removeListener(NAVIGATION_STATE_CHANNEL, wrapped);
+    };
+  },
+  executeSession(command: SessionCommand): Promise<SessionViewState> {
+    return ipcRenderer.invoke(SESSION_COMMAND_CHANNEL, command) as Promise<SessionViewState>;
+  },
+  getSessionState(): Promise<SessionViewState> {
+    return ipcRenderer.invoke(SESSION_GET_STATE_CHANNEL) as Promise<SessionViewState>;
+  },
+  subscribeSessions(listener: (state: SessionViewState) => void): () => void {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: SessionViewState): void => {
+      listener(state);
+    };
+
+    ipcRenderer.on(SESSION_STATE_CHANNEL, wrapped);
+    return () => {
+      ipcRenderer.removeListener(SESSION_STATE_CHANNEL, wrapped);
     };
   },
   executePicker(command: PickerCommand): Promise<PickerState> {

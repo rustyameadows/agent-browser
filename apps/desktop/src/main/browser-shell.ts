@@ -43,12 +43,16 @@ import {
   PICKER_COMMAND_CHANNEL,
   PICKER_GET_STATE_CHANNEL,
   PICKER_STATE_CHANNEL,
+  SESSION_COMMAND_CHANNEL,
+  SESSION_GET_STATE_CHANNEL,
+  SESSION_STATE_CHANNEL,
   createEmptyFeedbackDraft,
   createEmptyFeedbackState,
   createEmptyMcpViewState,
   createEmptyMarkdownViewState,
   createEmptyNavigationState,
   createEmptyPickerState,
+  createEmptySessionViewState,
   isFeedbackCommand,
   isChromeAppearanceCommand,
   isMcpViewCommand,
@@ -56,6 +60,7 @@ import {
   isNavigationCommand,
   isPagePickerEvent,
   isPickerCommand,
+  isSessionCommand,
   type ChromeAppearanceCommand,
   type ChromeAppearanceState,
   type FeedbackAnnotation,
@@ -71,6 +76,8 @@ import {
   type PageAgentOverlayState,
   type PickerCommand,
   type PickerState,
+  type SessionCommand,
+  type SessionViewState,
 } from '@agent-browser/protocol';
 import { extractMarkdownFromHtml } from './markdown';
 import { mapDiagnosticsToMcpViewState, type McpDiagnosticsSource } from './mcp-view';
@@ -133,6 +140,14 @@ interface BrowserShellOptions {
   initialUrl?: string;
   projectAppearance?: ProjectAppearanceRuntime;
   dockIconTemplatePath?: string;
+  sessionRuntime?: BrowserSessionRuntime;
+  role?: SessionViewState['role'];
+}
+
+interface BrowserSessionRuntime {
+  getState(): SessionViewState;
+  subscribe(listener: (state: SessionViewState) => void): () => void;
+  executeCommand(command: SessionCommand): Promise<SessionViewState>;
 }
 
 export class BrowserShell {
@@ -149,6 +164,7 @@ export class BrowserShell {
   private projectPanelMounted = false;
   private lastError: string | null = null;
   private pickerState: PickerState = createEmptyPickerState();
+  private sessionState: SessionViewState = createEmptySessionViewState();
   private feedbackState: FeedbackState = createEmptyFeedbackState();
   private markdownViewState: MarkdownViewState = createEmptyMarkdownViewState();
   private mcpViewState: McpViewState = createEmptyMcpViewState();
@@ -160,12 +176,16 @@ export class BrowserShell {
   private readonly disposeProjectAppearance: boolean;
   private readonly projectDockTemplatePath: string;
   private readonly projectAppearanceUnsubscribe: () => void;
+  private readonly sessionRuntime: BrowserSessionRuntime | null;
+  private readonly sessionRuntimeUnsubscribe: (() => void) | null;
+  private readonly role: SessionViewState['role'];
   private dockIconError: string | null = null;
   private dockIconStatus: ChromeAppearanceState['dockIconStatus'] = 'idle';
   private dockIconSource: ChromeAppearanceState['dockIconSource'] = 'chromeColor';
   private appliedDockIconKey: string | null = null;
 
   constructor(private readonly options: BrowserShellOptions = {}) {
+    this.role = options.role ?? 'project-session';
     this.projectAppearance =
       options.projectAppearance ??
       new ProjectAppearanceController(path.join(app.getPath('userData'), PROJECT_SELECTION_FILE_NAME));
@@ -181,6 +201,11 @@ export class BrowserShell {
       ...this.mergeChromeAppearanceDiagnostics(this.projectAppearance.getState()),
       isOpen: false,
     };
+    this.sessionRuntime = options.sessionRuntime ?? null;
+    this.sessionState = this.sessionRuntime?.getState() ?? {
+      ...createEmptySessionViewState(),
+      role: this.role,
+    };
     this.registerIpcHandlers();
     this.projectAppearanceUnsubscribe = this.projectAppearance.subscribe((state) => {
       this.chromeAppearanceState = {
@@ -191,6 +216,12 @@ export class BrowserShell {
       void this.syncDockIcon();
       this.sendChromeAppearanceState();
     });
+    this.sessionRuntimeUnsubscribe = this.sessionRuntime
+      ? this.sessionRuntime.subscribe((state) => {
+          this.sessionState = state;
+          this.sendSessionState();
+        })
+      : null;
   }
 
   ensureWindow(): void {
@@ -234,6 +265,8 @@ export class BrowserShell {
   dispose(): void {
     ipcMain.removeHandler(NAVIGATION_COMMAND_CHANNEL);
     ipcMain.removeHandler(NAVIGATION_GET_STATE_CHANNEL);
+    ipcMain.removeHandler(SESSION_COMMAND_CHANNEL);
+    ipcMain.removeHandler(SESSION_GET_STATE_CHANNEL);
     ipcMain.removeHandler(PICKER_COMMAND_CHANNEL);
     ipcMain.removeHandler(PICKER_GET_STATE_CHANNEL);
     ipcMain.removeHandler(MARKDOWN_VIEW_COMMAND_CHANNEL);
@@ -248,6 +281,7 @@ export class BrowserShell {
     this.mcpDiagnosticsUnsubscribe?.();
     this.mcpDiagnosticsUnsubscribe = null;
     this.projectAppearanceUnsubscribe();
+    this.sessionRuntimeUnsubscribe?.();
     if (this.disposeProjectAppearance) {
       this.projectAppearance.dispose();
     }
@@ -369,6 +403,13 @@ export class BrowserShell {
     return { ...this.chromeAppearanceState };
   }
 
+  getSessionState(): SessionViewState {
+    return {
+      ...this.sessionState,
+      sessions: this.sessionState.sessions.map((session) => ({ ...session })),
+    };
+  }
+
   getFeedbackState(): FeedbackState {
     return {
       ...this.feedbackState,
@@ -403,6 +444,19 @@ export class BrowserShell {
       chromeHeight: CHROME_HEIGHT,
       deviceScaleFactor: display.scaleFactor,
     };
+  }
+
+  isWindowFocused(): boolean {
+    return this.window?.isFocused() ?? false;
+  }
+
+  focusWindow(): void {
+    this.ensureWindow();
+    this.window?.focus();
+  }
+
+  closeWindow(): void {
+    this.window?.close();
   }
 
   attachMcpDiagnostics(source: McpDiagnosticsSource): void {
@@ -719,6 +773,8 @@ export class BrowserShell {
   private registerIpcHandlers(): void {
     ipcMain.removeHandler(NAVIGATION_COMMAND_CHANNEL);
     ipcMain.removeHandler(NAVIGATION_GET_STATE_CHANNEL);
+    ipcMain.removeHandler(SESSION_COMMAND_CHANNEL);
+    ipcMain.removeHandler(SESSION_GET_STATE_CHANNEL);
     ipcMain.removeHandler(PICKER_COMMAND_CHANNEL);
     ipcMain.removeHandler(PICKER_GET_STATE_CHANNEL);
     ipcMain.removeHandler(MARKDOWN_VIEW_COMMAND_CHANNEL);
@@ -749,6 +805,33 @@ export class BrowserShell {
       async (event: IpcMainInvokeEvent): Promise<NavigationState> => {
         this.assertChromeSender(event);
         return this.createNavigationState();
+      },
+    );
+
+    ipcMain.handle(
+      SESSION_COMMAND_CHANNEL,
+      async (event: IpcMainInvokeEvent, payload: unknown): Promise<SessionViewState> => {
+        this.assertChromeSender(event);
+
+        if (!isSessionCommand(payload)) {
+          throw new Error('Invalid session command payload.');
+        }
+
+        if (!this.sessionRuntime) {
+          return this.getSessionState();
+        }
+
+        this.sessionState = await this.sessionRuntime.executeCommand(payload);
+        this.sendSessionState();
+        return this.getSessionState();
+      },
+    );
+
+    ipcMain.handle(
+      SESSION_GET_STATE_CHANNEL,
+      async (event: IpcMainInvokeEvent): Promise<SessionViewState> => {
+        this.assertChromeSender(event);
+        return this.getSessionState();
       },
     );
 
@@ -1001,6 +1084,7 @@ export class BrowserShell {
 
     view.webContents.once('did-finish-load', () => {
       this.sendNavigationState();
+      this.sendSessionState();
       this.sendPickerState();
       this.sendFeedbackState();
       this.sendMarkdownViewState();
@@ -1631,6 +1715,15 @@ export class BrowserShell {
       return this.getChromeAppearanceState();
     }
 
+    if (this.sessionRuntime) {
+      this.sessionState = await this.sessionRuntime.executeCommand({
+        action: 'openProject',
+        projectRoot: result.filePaths[0],
+      });
+      this.sendSessionState();
+      return this.getChromeAppearanceState();
+    }
+
     return this.projectAppearance.selectProject(result.filePaths[0]);
   }
 
@@ -1986,6 +2079,10 @@ export class BrowserShell {
 
   private sendPickerState(): void {
     this.sendToTrustedViews(PICKER_STATE_CHANNEL, this.getPickerState());
+  }
+
+  private sendSessionState(): void {
+    this.sendToTrustedViews(SESSION_STATE_CHANNEL, this.getSessionState());
   }
 
   private sendFeedbackState(): void {

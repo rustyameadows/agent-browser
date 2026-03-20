@@ -976,6 +976,207 @@ describe('ToolServer', () => {
     expect(diagnostics.lastSelfTest.summary).toContain('not listening');
   });
 
+  it('exposes session tools and requires sessionId for broker-routed session tools', async () => {
+    const storageDir = await mkdtemp(path.join(os.tmpdir(), 'agent-browser-tool-server-'));
+    tempDirs.push(storageDir);
+
+    const sessionSummary = {
+      sessionId: 'client-a-1234abcd',
+      projectRoot: '/tmp/client-a',
+      projectName: 'client-a',
+      chromeColor: '#F297E7',
+      projectIconPath: './icon.svg',
+      isFocused: true,
+      isHome: false,
+      dockIconStatus: 'applied' as const,
+      status: 'ready' as const,
+    };
+    const proxiedCalls: Array<{
+      sessionId: string;
+      toolName: string;
+      args: Record<string, unknown>;
+    }> = [];
+
+    const server = new ToolServer({
+      runtime: {
+        listTabs: () => [],
+        executeNavigationCommand: async () => createEmptyNavigationState(),
+        executePickerCommand: async () => createEmptyPickerState(),
+        getPickerState: () => createEmptyPickerState(),
+        executeChromeAppearanceCommand: async () => createEmptyChromeAppearanceState(),
+        getChromeAppearanceState: () => createEmptyChromeAppearanceState(),
+        executeFeedbackCommand: async () => createEmptyFeedbackState(),
+        getFeedbackState: () => createEmptyFeedbackState(),
+        getMarkdownForCurrentPage: async () => createEmptyMarkdownViewState(),
+        getWindowState: () => ({
+          outerBounds: { x: 0, y: 0, width: 1200, height: 800 },
+          contentBounds: { x: 0, y: 24, width: 1200, height: 776 },
+          pageViewportBounds: { x: 0, y: 152, width: 1200, height: 624 },
+          chromeHeight: 152,
+          deviceScaleFactor: 2,
+        }),
+        resizeWindow: async () => ({
+          outerBounds: { x: 0, y: 0, width: 1200, height: 800 },
+          contentBounds: { x: 0, y: 24, width: 1200, height: 776 },
+          pageViewportBounds: { x: 0, y: 152, width: 1200, height: 624 },
+          chromeHeight: 152,
+          deviceScaleFactor: 2,
+        }),
+        captureScreenshot: async () => ({
+          target: 'page',
+          format: 'png',
+          mimeType: 'image/png',
+          data: Buffer.from('fixture'),
+          pixelWidth: 1200,
+          pixelHeight: 624,
+          fileNameHint: 'page',
+        }),
+        listSessions: () => [sessionSummary],
+        getCurrentSession: () => sessionSummary,
+        openSession: async () => [sessionSummary],
+        focusSession: async () => sessionSummary,
+        closeSession: async () => [],
+        proxyToolCall: async (sessionId, toolName, args) => {
+          proxiedCalls.push({ sessionId, toolName, args });
+          return {
+            content: [],
+            structuredContent: {
+              proxied: true,
+              sessionId,
+              toolName,
+            },
+          };
+        },
+      },
+      storageDir,
+      port: 0,
+      requireSessionId: true,
+      includeSessionTools: true,
+      logger: {
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      },
+    });
+
+    const connection = await server.start();
+
+    const toolsResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'tools-list',
+        method: 'tools/list',
+      }),
+    });
+    expect(toolsResponse.status).toBe(200);
+    const toolsPayload = (await toolsResponse.json()) as {
+      result: {
+        tools: Array<{
+          name: string;
+          inputSchema?: {
+            required?: string[];
+          };
+        }>;
+      };
+    };
+    expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('session.list');
+    expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('session.open');
+    const navigateDefinition = toolsPayload.result.tools.find(
+      (tool) => tool.name === 'page.navigate',
+    );
+    expect(navigateDefinition?.inputSchema?.required).toContain('sessionId');
+
+    const missingSessionIdResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'missing-session',
+        method: 'tools/call',
+        params: {
+          name: 'chrome.getAppearance',
+          arguments: {},
+        },
+      }),
+    });
+    expect(missingSessionIdResponse.status).toBe(500);
+    const missingSessionIdPayload = (await missingSessionIdResponse.json()) as {
+      error: {
+        message: string;
+      };
+    };
+    expect(missingSessionIdPayload.error.message).toContain('requires sessionId');
+
+    const sessionListResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'session-list',
+        method: 'tools/call',
+        params: {
+          name: 'session.list',
+          arguments: {},
+        },
+      }),
+    });
+    expect(sessionListResponse.status).toBe(200);
+    const sessionListPayload = (await sessionListResponse.json()) as {
+      result: {
+        structuredContent: {
+          sessions: Array<{ sessionId: string }>;
+        };
+      };
+    };
+    expect(sessionListPayload.result.structuredContent.sessions[0]?.sessionId).toBe(
+      sessionSummary.sessionId,
+    );
+
+    const proxiedResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'proxied-call',
+        method: 'tools/call',
+        params: {
+          name: 'page.navigate',
+          arguments: {
+            sessionId: sessionSummary.sessionId,
+            target: 'https://example.com',
+          },
+        },
+      }),
+    });
+    expect(proxiedResponse.status).toBe(200);
+    expect(proxiedCalls).toEqual([
+      {
+        sessionId: sessionSummary.sessionId,
+        toolName: 'page.navigate',
+        args: {
+          sessionId: sessionSummary.sessionId,
+          target: 'https://example.com',
+        },
+      },
+    ]);
+
+    await server.stop();
+  });
+
   it('tracks only external tool calls as active MCP work', async () => {
     const storageDir = await mkdtemp(path.join(os.tmpdir(), 'agent-browser-tool-server-'));
     tempDirs.push(storageDir);

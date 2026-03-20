@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type JSX, type SVGProps } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type JSX, type MouseEvent, type SVGProps } from 'react';
 import {
   DEFAULT_CHROME_COLOR,
   createEmptyChromeAppearanceState,
@@ -7,6 +7,7 @@ import {
   createEmptyMarkdownViewState,
   createEmptyNavigationState,
   createEmptyPickerState,
+  createEmptySessionViewState,
   type ChromeAppearanceCommand,
   type ChromeAppearanceState,
   type ElementDescriptor,
@@ -23,6 +24,9 @@ import {
   type NavigationState,
   type PickerCommand,
   type PickerState,
+  type SessionCommand,
+  type SessionSummary,
+  type SessionViewState,
 } from '@agent-browser/protocol';
 import {
   getChromeAppearanceCssVariables,
@@ -47,6 +51,7 @@ const emptyPickerState = createEmptyPickerState();
 const emptyFeedbackState = createEmptyFeedbackState();
 const emptyMarkdownState = createEmptyMarkdownViewState();
 const emptyMcpState = createEmptyMcpViewState();
+const emptySessionState = createEmptySessionViewState();
 const stubTabs = ['Agent Chat', 'Inspector'];
 const AGENT_DONE_PULSE_MS = 1600;
 
@@ -290,6 +295,45 @@ const getDockIconStatusLabel = (state: ChromeAppearanceState): string => {
   }
 
   return 'Dock icon not applied yet';
+};
+
+const getReadableForeground = (hexColor: string): string => {
+  const red = Number.parseInt(hexColor.slice(1, 3), 16);
+  const green = Number.parseInt(hexColor.slice(3, 5), 16);
+  const blue = Number.parseInt(hexColor.slice(5, 7), 16);
+  const perceivedLuminance = (red * 299 + green * 587 + blue * 114) / 1000;
+  return perceivedLuminance >= 150 ? '#0F172A' : '#FFFFFF';
+};
+
+const getSessionBadgeLabel = (session: SessionSummary): string => {
+  const letters = session.projectName
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
+
+  return letters || 'LB';
+};
+
+const getSessionChipMeta = (session: SessionSummary): string => {
+  if (session.status === 'launching') {
+    return 'Launching';
+  }
+
+  if (session.status === 'closing') {
+    return 'Closing';
+  }
+
+  if (session.status === 'error') {
+    return 'Error';
+  }
+
+  if (session.isFocused) {
+    return 'Focused';
+  }
+
+  return session.dockIconStatus === 'failed' ? 'Dock icon issue' : 'Ready';
 };
 
 const getMcpAuthLabel = (state: McpViewState): string => {
@@ -706,6 +750,40 @@ const useChromeAppearanceState = (): ChromeAppearanceState => {
   return chromeAppearanceState;
 };
 
+const useSessionState = (): SessionViewState => {
+  const [sessionState, setSessionState] = useState<SessionViewState>(emptySessionState);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const syncInitialSessionState = async (): Promise<void> => {
+      const initialState = await window.agentBrowser.getSessionState();
+      if (!isMounted) {
+        return;
+      }
+
+      setSessionState(initialState);
+    };
+
+    void syncInitialSessionState();
+
+    const unsubscribe = window.agentBrowser.subscribeSessions((nextState) => {
+      if (!isMounted) {
+        return;
+      }
+
+      setSessionState(nextState);
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  return sessionState;
+};
+
 const useMcpPresence = (
   mcpViewState: McpViewState,
 ): {
@@ -752,10 +830,142 @@ const useMcpPresence = (
   };
 };
 
+const SessionStrip = ({
+  sessionState,
+}: {
+  sessionState: SessionViewState;
+}): JSX.Element => {
+  const [isOpeningProject, setIsOpeningProject] = useState(false);
+  const activeSessionId =
+    sessionState.sessions.find((session) => session.isFocused)?.sessionId ??
+    sessionState.currentSessionId;
+
+  const runSessionCommand = async (command: SessionCommand): Promise<void> => {
+    await window.agentBrowser.executeSession(command);
+  };
+
+  const handleOpenProject = async (): Promise<void> => {
+    setIsOpeningProject(true);
+    try {
+      await runSessionCommand({ action: 'openProject' });
+    } catch {
+      // Session errors are surfaced through session state.
+    } finally {
+      setIsOpeningProject(false);
+    }
+  };
+
+  const handleFocusSession = async (sessionId: string): Promise<void> => {
+    try {
+      await runSessionCommand({ action: 'focus', sessionId });
+    } catch {
+      // Session errors are surfaced through session state.
+    }
+  };
+
+  const handleCloseSession = async (
+    event: MouseEvent<HTMLButtonElement>,
+    sessionId: string,
+  ): Promise<void> => {
+    event.stopPropagation();
+    try {
+      await runSessionCommand({ action: 'close', sessionId });
+    } catch {
+      // Session errors are surfaced through session state.
+    }
+  };
+
+  return (
+    <section aria-label="Open projects" className="shell__projectStrip">
+      <div className="shell__projectStripLabel">
+        {sessionState.role === 'launcher' ? 'Launcher' : 'Projects'}
+      </div>
+
+      {sessionState.sessions.length > 0 ? (
+        <div className="shell__projectStripRail">
+          {sessionState.sessions.map((session) => {
+            const badgeForeground = getReadableForeground(session.chromeColor);
+            const isActive = activeSessionId === session.sessionId;
+
+            return (
+              <div
+                className={`shell__projectChip${
+                  isActive ? ' shell__projectChip--active' : ''
+                }`}
+                key={session.sessionId}
+              >
+                <button
+                  className="shell__projectChipFocus"
+                  onClick={() => void handleFocusSession(session.sessionId)}
+                  type="button"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="shell__projectBadge"
+                    style={{
+                      backgroundColor: session.chromeColor,
+                      color: badgeForeground,
+                    }}
+                  >
+                    {getSessionBadgeLabel(session)}
+                  </span>
+                  <span className="shell__projectChipCopy">
+                    <span className="shell__projectChipTitle">{session.projectName}</span>
+                    <span className="shell__projectChipMeta">{getSessionChipMeta(session)}</span>
+                  </span>
+                </button>
+                <span className="shell__projectChipActions">
+                  <span
+                    aria-hidden="true"
+                    className={`shell__statusDot shell__statusDot--${
+                      session.status === 'error'
+                        ? 'red'
+                        : session.status === 'launching' || session.status === 'closing'
+                          ? 'yellow'
+                          : session.dockIconStatus === 'failed'
+                            ? 'red'
+                            : 'green'
+                    }`}
+                  />
+                  <button
+                    aria-label={`Close ${session.projectName}`}
+                    className="shell__projectChipClose"
+                    onClick={(event) => void handleCloseSession(event, session.sessionId)}
+                    type="button"
+                  >
+                    <ChromeIcon className="shell__icon" name="close" />
+                  </button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="shell__projectEmpty">
+          No projects are open yet. Open a folder to launch a dedicated Loop Browser session.
+        </div>
+      )}
+
+      <div className="shell__projectStripActions">
+        <button
+          className="shell__pillButton shell__pillButton--muted"
+          disabled={isOpeningProject}
+          onClick={() => void handleOpenProject()}
+          type="button"
+        >
+          {isOpeningProject ? 'Opening...' : 'Open Project'}
+        </button>
+      </div>
+    </section>
+  );
+};
+
 const ChromeSurface = ({
   chromeAppearanceState,
+  sessionState,
 }: {
   chromeAppearanceState: ChromeAppearanceState;
+  sessionState: SessionViewState;
 }): JSX.Element => {
   const navigationState = useNavigationState();
   const pickerState = usePickerState();
@@ -865,6 +1075,7 @@ const ChromeSurface = ({
           }`
       : 'Use the crosshair button or View > Toggle Pick Mode.';
   const diagnosticLabel =
+    sessionState.lastError ??
     navigationState.lastError ??
     (mcpPresence.isBusy || mcpPresence.isDonePulse
       ? mcpPresence.message ?? 'Agent working via MCP.'
@@ -938,6 +1149,8 @@ const ChromeSurface = ({
             </div>
           </div>
         </div>
+
+        <SessionStrip sessionState={sessionState} />
 
         <form className="shell__toolbar" onSubmit={(event) => void handleSubmit(event)}>
           <div className="shell__nav">
@@ -1093,7 +1306,7 @@ const ChromeSurface = ({
 
         <div
           className={`shell__diagnostic${
-            navigationState.lastError ? ' shell__diagnostic--error' : ''
+            navigationState.lastError || sessionState.lastError ? ' shell__diagnostic--error' : ''
           }`}
         >
           {diagnosticLabel}
@@ -1440,10 +1653,14 @@ const McpSurface = (): JSX.Element => {
 
 const ProjectSurface = ({
   chromeAppearanceState,
+  sessionState,
 }: {
   chromeAppearanceState: ChromeAppearanceState;
+  sessionState: SessionViewState;
 }): JSX.Element => {
   const hasProject = chromeAppearanceState.projectRoot.trim().length > 0;
+  const projectActionLabel =
+    sessionState.role === 'project-session' ? 'Open Another Project' : 'Open Project';
   const [chromeColorDraft, setChromeColorDraft] = useState(chromeAppearanceState.chromeColor);
   const [accentColorDraft, setAccentColorDraft] = useState(chromeAppearanceState.accentColor);
   const [projectIconPathDraft, setProjectIconPathDraft] = useState(
@@ -1610,7 +1827,7 @@ const ProjectSurface = ({
                 onClick={() => void runChromeAppearanceCommand({ action: 'selectProject' })}
                 type="button"
               >
-                {hasProject ? 'Change Folder' : 'Choose Folder'}
+                {projectActionLabel}
               </button>
             </div>
             {hasProject ? (
@@ -1632,10 +1849,16 @@ const ProjectSurface = ({
                 <div className="projectSurface__sectionMeta">
                   Relative icon paths resolve from this project folder.
                 </div>
+                {sessionState.role === 'project-session' ? (
+                  <div className="projectSurface__sectionMeta">
+                    Use Open Another Project to spawn a separate session window without changing
+                    this project.
+                  </div>
+                ) : null}
               </>
             ) : (
               <div className="projectSurface__empty">
-                Choose a project folder first. Loop Browser will create or update
+                Open a project folder first. Loop Browser will create or update
                 <code> .loop-browser.json </code>
                 inside that folder, and that file will control the app chrome.
               </div>
@@ -2227,6 +2450,7 @@ const FeedbackSurface = (): JSX.Element => {
 export const App = (): JSX.Element => {
   const surfaceMode = getSurfaceMode();
   const chromeAppearanceState = useChromeAppearanceState();
+  const sessionState = useSessionState();
 
   useEffect(() => {
     const cssVariables = getChromeAppearanceCssVariables(chromeAppearanceState);
@@ -2248,8 +2472,13 @@ export const App = (): JSX.Element => {
   }
 
   if (surfaceMode === 'project') {
-    return <ProjectSurface chromeAppearanceState={chromeAppearanceState} />;
+    return (
+      <ProjectSurface
+        chromeAppearanceState={chromeAppearanceState}
+        sessionState={sessionState}
+      />
+    );
   }
 
-  return <ChromeSurface chromeAppearanceState={chromeAppearanceState} />;
+  return <ChromeSurface chromeAppearanceState={chromeAppearanceState} sessionState={sessionState} />;
 };

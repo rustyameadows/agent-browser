@@ -6,6 +6,11 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const EXPECTED_TOOLS = [
+  'session.list',
+  'session.open',
+  'session.focus',
+  'session.close',
+  'session.getCurrent',
   'browser.listTabs',
   'browser.getWindowState',
   'browser.resizeWindow',
@@ -28,8 +33,10 @@ const REGISTRATION_TIMEOUT_MS = 60_000
 const REQUEST_TIMEOUT_MS = 15_000
 const SHUTDOWN_TIMEOUT_MS = 10_000
 const SMOKE_CHROME_COLOR = '#EAF3FF'
+const SECOND_SMOKE_CHROME_COLOR = '#F6E9FF'
 const SMOKE_ACCENT_COLOR = '#FF6B35'
 const UPDATED_ACCENT_COLOR = '#0A84FF'
+const SECOND_SMOKE_ACCENT_COLOR = '#18A57B'
 const SMOKE_PROJECT_ICON_FILE = 'project-icon.svg'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -139,8 +146,16 @@ const assertSamePath = async (actualPath, expectedPath, message) => {
   assert(resolvedActualPath === resolvedExpectedPath, message)
 }
 
-const writeSmokeProjectFixture = async (smokeDir) => {
-  const projectRoot = path.join(smokeDir, 'project')
+const writeSmokeProjectFixture = async (
+  smokeDir,
+  fixtureName,
+  {
+    chromeColor,
+    accentColor,
+    iconColor,
+  },
+) => {
+  const projectRoot = path.join(smokeDir, fixtureName)
 
   await mkdir(projectRoot, { recursive: true })
 
@@ -153,7 +168,7 @@ const writeSmokeProjectFixture = async (smokeDir) => {
     [
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">',
       '  <rect width="256" height="256" rx="48" fill="#18304F" />',
-      '  <circle cx="128" cy="112" r="54" fill="#FF6B35" />',
+      `  <circle cx="128" cy="112" r="54" fill="${iconColor}" />`,
       '  <path d="M74 176h108v22H74z" fill="#F6F9FF" />',
       '</svg>',
       '',
@@ -167,8 +182,8 @@ const writeSmokeProjectFixture = async (smokeDir) => {
       {
         version: 1,
         chrome: {
-          chromeColor: SMOKE_CHROME_COLOR,
-          accentColor: SMOKE_ACCENT_COLOR,
+          chromeColor,
+          accentColor,
           projectIconPath: `./${SMOKE_PROJECT_ICON_FILE}`,
         },
       },
@@ -184,6 +199,17 @@ const writeSmokeProjectFixture = async (smokeDir) => {
     projectIconPath,
   }
 }
+
+const callTool = async (registration, id, name, args = {}) =>
+  makeRpcRequest(
+    registration,
+    'tools/call',
+    {
+      name,
+      arguments: args,
+    },
+    id,
+  )
 
 const makeRpcRequest = async (registration, method, params, id) => {
   const token = String(registration.transport.headers.Authorization).replace(/^Bearer\s+/, '')
@@ -223,6 +249,7 @@ const makeNotification = async (registration, method, params) => {
 const waitForChromeAppearance = async (
   registration,
   id,
+  sessionId,
   predicate,
   timeoutMs = 10_000,
   intervalMs = 250,
@@ -236,7 +263,9 @@ const waitForChromeAppearance = async (
       'tools/call',
       {
         name: 'chrome.getAppearance',
-        arguments: {},
+        arguments: {
+          sessionId,
+        },
       },
       id,
     )
@@ -251,6 +280,31 @@ const waitForChromeAppearance = async (
 
   return lastResponse
 }
+
+const waitForSessions = async (
+  registration,
+  id,
+  predicate,
+  timeoutMs = 20_000,
+  intervalMs = 250,
+) => {
+  const startedAt = Date.now()
+  let lastSessions = []
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const response = await callTool(registration, id, 'session.list')
+    lastSessions = response.body?.result?.structuredContent?.sessions ?? []
+    if (predicate(lastSessions)) {
+      return lastSessions
+    }
+    await sleep(intervalMs)
+  }
+
+  return lastSessions
+}
+
+const findSessionByProjectRoot = (sessions, projectRoot) =>
+  sessions.find((session) => session.projectRoot === projectRoot) ?? null
 
 const findWorkspaceBinary = async () => {
   const electronBinary = path.join(
@@ -407,6 +461,58 @@ const terminateChild = async (child, exitPromise) => {
   await Promise.race([exitPromise, sleep(2_000)])
 }
 
+const terminateSessionProcesses = async (clusterDir) => {
+  const pids = []
+
+  try {
+    const sessionsDir = path.join(clusterDir, 'sessions')
+    const entries = await readdir(sessionsDir, { withFileTypes: true })
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) {
+        continue
+      }
+
+      try {
+        const record = JSON.parse(await readFile(path.join(sessionsDir, entry.name), 'utf8'))
+        if (typeof record?.pid === 'number') {
+          pids.push(record.pid)
+          try {
+            process.kill(record.pid, 'SIGTERM')
+          } catch {
+            // Process may already be gone.
+          }
+        }
+      } catch {
+        // Ignore malformed records during cleanup.
+      }
+    }
+  } catch {
+    // Cluster directory may already be gone.
+  }
+
+  if (pids.length === 0) {
+    return
+  }
+
+  await sleep(1_500)
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 0)
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        // Process may have exited between checks.
+      }
+    } catch {
+      // Process already exited.
+    }
+  }
+
+  await sleep(400)
+}
+
 const state = {
   runtime,
   stdout: '',
@@ -419,24 +525,38 @@ const state = {
 
 const run = async () => {
   const smokeDir = await mkdtemp(path.join(os.tmpdir(), 'agent-browser-mcp-smoke-'))
-  const userDataDir = path.join(smokeDir, 'user-data')
-  const projectFixture = await writeSmokeProjectFixture(smokeDir)
+  const clusterDir = path.join(smokeDir, 'cluster')
+  const homeDir = path.join(smokeDir, 'home')
+  const projectFixtureA = await writeSmokeProjectFixture(smokeDir, 'project-a', {
+    chromeColor: SMOKE_CHROME_COLOR,
+    accentColor: SMOKE_ACCENT_COLOR,
+    iconColor: '#FF6B35',
+  })
+  const projectFixtureB = await writeSmokeProjectFixture(smokeDir, 'project-b', {
+    chromeColor: SECOND_SMOKE_CHROME_COLOR,
+    accentColor: SECOND_SMOKE_ACCENT_COLOR,
+    iconColor: '#4F46E5',
+  })
   const fixtureUrl = pathToFileURL(
     path.join(repoRoot, 'apps', 'desktop', 'static', 'local-fixture.html'),
   ).toString()
+  const fixtureUrlA = `${fixtureUrl}?session=alpha`
+  const fixtureUrlB = `${fixtureUrl}?session=beta`
+  const fixtureUrlBAfterClose = `${fixtureUrl}?session=beta-after-close`
   const port = await findFreePort()
 
-  await mkdir(userDataDir, { recursive: true })
+  await mkdir(clusterDir, { recursive: true })
+  await mkdir(homeDir, { recursive: true })
 
   const env = {
     ...process.env,
-    AGENT_BROWSER_PROJECT_ROOT: projectFixture.projectRoot,
-    AGENT_BROWSER_USER_DATA_DIR: userDataDir,
+    LOOP_BROWSER_CLUSTER_DIR: clusterDir,
+    HOME: homeDir,
     AGENT_BROWSER_TOOL_SERVER_PORT: String(port),
     AGENT_BROWSER_START_URL: 'about:blank',
   }
 
-  const registrationPath = path.join(userDataDir, 'mcp-registration.json')
+  const registrationPath = path.join(clusterDir, 'mcp-registration.json')
   const { child, exitPromise } = await spawnApp(runtime, env, repoRoot, state)
 
   try {
@@ -485,78 +605,163 @@ const run = async () => {
     state.requests.push({ name: 'tools/list', status: tools.status, body: tools.body })
     assert(tools.status === 200, 'tools/list should return 200.')
 
-    const toolNames = tools.body?.result?.tools?.map((tool) => tool.name) ?? []
+    const toolDefinitions = tools.body?.result?.tools ?? []
+    const toolNames = toolDefinitions.map((tool) => tool.name) ?? []
     for (const toolName of EXPECTED_TOOLS) {
       assert(toolNames.includes(toolName), `tools/list did not include ${toolName}.`)
     }
+    const navigateDefinition = toolDefinitions.find((tool) => tool.name === 'page.navigate')
+    assert(
+      navigateDefinition?.inputSchema?.required?.includes('sessionId'),
+      'tools/list did not mark page.navigate as requiring sessionId.',
+    )
 
-    const initialAppearance = await waitForChromeAppearance(
+    const missingSessionId = await callTool(registration, 3, 'chrome.getAppearance')
+    state.requests.push({
+      name: 'tools/call:chrome.getAppearance:missing-sessionId',
+      status: missingSessionId.status,
+      body: missingSessionId.body,
+    })
+    assert(missingSessionId.status === 500, 'chrome.getAppearance without sessionId should fail.')
+    assert(
+      missingSessionId.body?.error?.message?.includes('requires sessionId'),
+      'chrome.getAppearance without sessionId did not explain the sessionId requirement.',
+    )
+
+    const openFirstSession = await callTool(registration, 4, 'session.open', {
+      projectRoot: projectFixtureA.projectRoot,
+    })
+    state.requests.push({
+      name: 'tools/call:session.open:project-a',
+      status: openFirstSession.status,
+      body: openFirstSession.body,
+    })
+    assert(openFirstSession.status === 200, 'session.open(project-a) should return 200.')
+
+    const openSecondSession = await callTool(registration, 5, 'session.open', {
+      projectRoot: projectFixtureB.projectRoot,
+    })
+    state.requests.push({
+      name: 'tools/call:session.open:project-b',
+      status: openSecondSession.status,
+      body: openSecondSession.body,
+    })
+    assert(openSecondSession.status === 200, 'session.open(project-b) should return 200.')
+
+    const sessions = await waitForSessions(
       registration,
-      3,
+      6,
+      (currentSessions) =>
+        currentSessions.length === 2 &&
+        Boolean(findSessionByProjectRoot(currentSessions, projectFixtureA.projectRoot)) &&
+        Boolean(findSessionByProjectRoot(currentSessions, projectFixtureB.projectRoot)),
+    )
+    const sessionA = findSessionByProjectRoot(sessions, projectFixtureA.projectRoot)
+    const sessionB = findSessionByProjectRoot(sessions, projectFixtureB.projectRoot)
+    assert(sessionA, 'session.list did not include project-a.')
+    assert(sessionB, 'session.list did not include project-b.')
+
+    const currentSession = await callTool(registration, 7, 'session.getCurrent')
+    state.requests.push({
+      name: 'tools/call:session.getCurrent',
+      status: currentSession.status,
+      body: currentSession.body,
+    })
+    assert(currentSession.status === 200, 'session.getCurrent should return 200.')
+    const currentSessionId = currentSession.body?.result?.structuredContent?.session?.sessionId
+    assert(
+      currentSessionId === sessionA.sessionId || currentSessionId === sessionB.sessionId,
+      'session.getCurrent did not return one of the open project sessions.',
+    )
+
+    const focusSecondSession = await callTool(registration, 8, 'session.focus', {
+      sessionId: sessionB.sessionId,
+    })
+    state.requests.push({
+      name: 'tools/call:session.focus:project-b',
+      status: focusSecondSession.status,
+      body: focusSecondSession.body,
+    })
+    assert(focusSecondSession.status === 200, 'session.focus(project-b) should return 200.')
+
+    const initialAppearanceA = await waitForChromeAppearance(
+      registration,
+      9,
+      sessionA.sessionId,
       (appearance) => appearance?.dockIconStatus !== 'idle',
     )
     state.requests.push({
-      name: 'tools/call:chrome.getAppearance',
-      status: initialAppearance.status,
-      body: initialAppearance.body,
+      name: 'tools/call:chrome.getAppearance:project-a',
+      status: initialAppearanceA.status,
+      body: initialAppearanceA.body,
     })
-    assert(initialAppearance.status === 200, 'chrome.getAppearance should return 200.')
-    const initialAppearanceState = initialAppearance.body?.result?.structuredContent?.appearance
+    assert(initialAppearanceA.status === 200, 'chrome.getAppearance(project-a) should return 200.')
+    const initialAppearanceStateA = initialAppearanceA.body?.result?.structuredContent?.appearance
     await assertSamePath(
-      initialAppearanceState?.projectRoot,
-      projectFixture.projectRoot,
-      'chrome.getAppearance did not report the smoke project root.',
-    )
-    await assertSamePath(
-      initialAppearanceState?.configPath,
-      projectFixture.configPath,
-      'chrome.getAppearance did not report the smoke config path.',
-    )
-    assert(
-      initialAppearanceState?.chromeColor === SMOKE_CHROME_COLOR,
-      'chrome.getAppearance did not load the configured chrome color.',
-    )
-    assert(
-      initialAppearanceState?.accentColor === SMOKE_ACCENT_COLOR,
-      'chrome.getAppearance did not load the configured accent color.',
-    )
-    assert(
-      initialAppearanceState?.projectIconPath === `./${SMOKE_PROJECT_ICON_FILE}`,
-      'chrome.getAppearance did not load the configured project icon path.',
+      initialAppearanceStateA?.projectRoot,
+      projectFixtureA.projectRoot,
+      'chrome.getAppearance(project-a) did not report the smoke project root.',
     )
     await assertSamePath(
-      initialAppearanceState?.resolvedProjectIconPath,
-      projectFixture.projectIconPath,
-      'chrome.getAppearance did not resolve the project icon path relative to the smoke project.',
+      initialAppearanceStateA?.configPath,
+      projectFixtureA.configPath,
+      'chrome.getAppearance(project-a) did not report the smoke config path.',
     )
     assert(
-      initialAppearanceState?.dockIconStatus === 'applied',
-      'chrome.getAppearance did not report an applied Dock icon state.',
+      initialAppearanceStateA?.chromeColor === SMOKE_CHROME_COLOR,
+      'chrome.getAppearance(project-a) did not load the configured chrome color.',
     )
     assert(
-      initialAppearanceState?.dockIconSource === 'projectIcon',
-      'chrome.getAppearance did not report the expected Dock icon source.',
+      initialAppearanceStateA?.accentColor === SMOKE_ACCENT_COLOR,
+      'chrome.getAppearance(project-a) did not load the configured accent color.',
     )
     assert(
-      initialAppearanceState?.dockIconLastError === null,
-      'chrome.getAppearance reported a Dock icon error during initial load.',
+      initialAppearanceStateA?.projectIconPath === `./${SMOKE_PROJECT_ICON_FILE}`,
+      'chrome.getAppearance(project-a) did not load the configured project icon path.',
+    )
+    await assertSamePath(
+      initialAppearanceStateA?.resolvedProjectIconPath,
+      projectFixtureA.projectIconPath,
+      'chrome.getAppearance(project-a) did not resolve the project icon path relative to the smoke project.',
+    )
+    assert(
+      initialAppearanceStateA?.dockIconStatus === 'applied',
+      'chrome.getAppearance(project-a) did not report an applied Dock icon state.',
+    )
+    assert(
+      initialAppearanceStateA?.dockIconSource === 'projectIcon',
+      'chrome.getAppearance(project-a) did not report the expected Dock icon source.',
+    )
+    assert(
+      initialAppearanceStateA?.dockIconLastError === null,
+      'chrome.getAppearance(project-a) reported a Dock icon error during initial load.',
     )
 
-    const updatedAppearance = await makeRpcRequest(
+    const initialAppearanceB = await waitForChromeAppearance(
       registration,
-      'tools/call',
-      {
-        name: 'chrome.setAppearance',
-        arguments: {
-          accentColor: UPDATED_ACCENT_COLOR,
-        },
-      },
-      4,
+      10,
+      sessionB.sessionId,
+      (appearance) => appearance?.dockIconStatus !== 'idle',
     )
     state.requests.push({
-      name: 'tools/call:chrome.setAppearance',
-      status: updatedAppearance.status,
-      body: updatedAppearance.body,
+      name: 'tools/call:chrome.getAppearance:project-b',
+      status: initialAppearanceB.status,
+      body: initialAppearanceB.body,
+    })
+    assert(initialAppearanceB.status === 200, 'chrome.getAppearance(project-b) should return 200.')
+    const initialAppearanceStateB = initialAppearanceB.body?.result?.structuredContent?.appearance
+    assert(
+      initialAppearanceStateB?.chromeColor === SECOND_SMOKE_CHROME_COLOR,
+      'chrome.getAppearance(project-b) did not load the second project chrome color.',
+    )
+    assert(
+      initialAppearanceStateB?.accentColor === SECOND_SMOKE_ACCENT_COLOR,
+      'chrome.getAppearance(project-b) did not load the second project accent color.',
+    )
+
+    const updatedAppearance = await callTool(registration, 11, 'chrome.setAppearance', {
+      sessionId: sessionA.sessionId,
+      accentColor: UPDATED_ACCENT_COLOR,
     })
     assert(updatedAppearance.status === 200, 'chrome.setAppearance should return 200.')
     const updatedAppearanceState = updatedAppearance.body?.result?.structuredContent?.appearance
@@ -572,286 +777,231 @@ const run = async () => {
       updatedAppearanceState?.dockIconLastError === null,
       'chrome.setAppearance reported a Dock icon error.',
     )
-    const persistedAppearance = JSON.parse(await readFile(projectFixture.configPath, 'utf8'))
+    const persistedAppearance = JSON.parse(await readFile(projectFixtureA.configPath, 'utf8'))
     assert(
       persistedAppearance?.chrome?.accentColor === UPDATED_ACCENT_COLOR,
       'chrome.setAppearance did not persist the updated accent color to .loop-browser.json.',
     )
 
-    const navigate = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'page.navigate',
-        arguments: {
-          target: fixtureUrl,
-        },
-      },
-      5,
-    )
-    state.requests.push({ name: 'tools/call:page.navigate', status: navigate.status, body: navigate.body })
-    assert(navigate.status === 200, 'page.navigate should return 200.')
+    const navigateA = await callTool(registration, 12, 'page.navigate', {
+      sessionId: sessionA.sessionId,
+      target: fixtureUrlA,
+    })
+    state.requests.push({ name: 'tools/call:page.navigate:project-a', status: navigateA.status, body: navigateA.body })
+    assert(navigateA.status === 200, 'page.navigate(project-a) should return 200.')
     assert(
-      navigate.body?.result?.structuredContent?.navigation?.url === fixtureUrl,
-      'page.navigate did not navigate to the expected fixture URL.',
+      navigateA.body?.result?.structuredContent?.navigation?.url === fixtureUrlA,
+      'page.navigate(project-a) did not navigate to the expected fixture URL.',
     )
 
-    const listTabs = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'browser.listTabs',
-        arguments: {},
-      },
-      6,
-    )
-    state.requests.push({ name: 'tools/call:browser.listTabs', status: listTabs.status, body: listTabs.body })
-    assert(listTabs.status === 200, 'browser.listTabs should return 200.')
+    const navigateB = await callTool(registration, 13, 'page.navigate', {
+      sessionId: sessionB.sessionId,
+      target: fixtureUrlB,
+    })
+    state.requests.push({ name: 'tools/call:page.navigate:project-b', status: navigateB.status, body: navigateB.body })
+    assert(navigateB.status === 200, 'page.navigate(project-b) should return 200.')
     assert(
-      listTabs.body?.result?.structuredContent?.tabs?.[0]?.url === fixtureUrl,
-      'browser.listTabs did not return the navigated fixture URL.',
+      navigateB.body?.result?.structuredContent?.navigation?.url === fixtureUrlB,
+      'page.navigate(project-b) did not navigate to the expected fixture URL.',
     )
 
-    const markdown = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'page.viewAsMarkdown',
-        arguments: {
-          forceRefresh: true,
-        },
-      },
-      7,
+    const listTabsA = await callTool(registration, 14, 'browser.listTabs', {
+      sessionId: sessionA.sessionId,
+    })
+    state.requests.push({ name: 'tools/call:browser.listTabs:project-a', status: listTabsA.status, body: listTabsA.body })
+    assert(listTabsA.status === 200, 'browser.listTabs(project-a) should return 200.')
+    assert(
+      listTabsA.body?.result?.structuredContent?.tabs?.[0]?.url === fixtureUrlA,
+      'browser.listTabs(project-a) did not return the navigated fixture URL.',
     )
+
+    const listTabsB = await callTool(registration, 15, 'browser.listTabs', {
+      sessionId: sessionB.sessionId,
+    })
+    state.requests.push({ name: 'tools/call:browser.listTabs:project-b', status: listTabsB.status, body: listTabsB.body })
+    assert(listTabsB.status === 200, 'browser.listTabs(project-b) should return 200.')
+    assert(
+      listTabsB.body?.result?.structuredContent?.tabs?.[0]?.url === fixtureUrlB,
+      'browser.listTabs(project-b) did not return the navigated fixture URL.',
+    )
+
+    const markdown = await callTool(registration, 16, 'page.viewAsMarkdown', {
+      sessionId: sessionA.sessionId,
+      forceRefresh: true,
+    })
     state.requests.push({
-      name: 'tools/call:page.viewAsMarkdown',
+      name: 'tools/call:page.viewAsMarkdown:project-a',
       status: markdown.status,
       body: markdown.body,
     })
-    assert(markdown.status === 200, 'page.viewAsMarkdown should return 200.')
+    assert(markdown.status === 200, 'page.viewAsMarkdown(project-a) should return 200.')
     assert(
-      markdown.body?.result?.structuredContent?.url === fixtureUrl,
-      'page.viewAsMarkdown did not report the fixture URL.',
+      markdown.body?.result?.structuredContent?.url === fixtureUrlA,
+      'page.viewAsMarkdown(project-a) did not report the fixture URL.',
     )
     assert(
       markdown.body?.result?.structuredContent?.title === 'Loop Fixture',
-      'page.viewAsMarkdown did not return the expected fixture title.',
+      'page.viewAsMarkdown(project-a) did not return the expected fixture title.',
     )
     assert(
       markdown.body?.result?.structuredContent?.markdown?.includes(
         'Your local launchpad is ready.',
       ),
-      'page.viewAsMarkdown did not contain the expected fixture Markdown.',
+      'page.viewAsMarkdown(project-a) did not contain the expected fixture Markdown.',
     )
 
-    const windowState = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'browser.getWindowState',
-        arguments: {},
-      },
-      8,
-    )
+    const windowState = await callTool(registration, 17, 'browser.getWindowState', {
+      sessionId: sessionB.sessionId,
+    })
     state.requests.push({
-      name: 'tools/call:browser.getWindowState',
+      name: 'tools/call:browser.getWindowState:project-b',
       status: windowState.status,
       body: windowState.body,
     })
-    assert(windowState.status === 200, 'browser.getWindowState should return 200.')
+    assert(windowState.status === 200, 'browser.getWindowState(project-b) should return 200.')
     assert(
       typeof windowState.body?.result?.structuredContent?.window?.chromeHeight === 'number',
-      'browser.getWindowState did not return a valid window payload.',
+      'browser.getWindowState(project-b) did not return a valid window payload.',
     )
 
-    const resized = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'browser.resizeWindow',
-        arguments: {
-          width: 1280,
-          height: 720,
-          target: 'pageViewport',
-        },
-      },
-      9,
-    )
+    const resized = await callTool(registration, 18, 'browser.resizeWindow', {
+      sessionId: sessionB.sessionId,
+      width: 1280,
+      height: 720,
+      target: 'pageViewport',
+    })
     state.requests.push({
-      name: 'tools/call:browser.resizeWindow',
+      name: 'tools/call:browser.resizeWindow:project-b',
       status: resized.status,
       body: resized.body,
     })
-    assert(resized.status === 200, 'browser.resizeWindow should return 200.')
+    assert(resized.status === 200, 'browser.resizeWindow(project-b) should return 200.')
     assert(
       resized.body?.result?.structuredContent?.window?.pageViewportBounds?.width === 1280,
-      'browser.resizeWindow did not apply the requested viewport width.',
+      'browser.resizeWindow(project-b) did not apply the requested viewport width.',
     )
     assert(
       resized.body?.result?.structuredContent?.window?.pageViewportBounds?.height === 720,
-      'browser.resizeWindow did not apply the requested viewport height.',
+      'browser.resizeWindow(project-b) did not apply the requested viewport height.',
     )
 
-    const pageScreenshot = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'page.screenshot',
-        arguments: {
-          target: 'page',
-          fileNameHint: 'fixture-page',
-        },
-      },
-      10,
-    )
-    state.requests.push({
-      name: 'tools/call:page.screenshot:page',
-      status: pageScreenshot.status,
-      body: pageScreenshot.body,
+    const pageScreenshotA = await callTool(registration, 19, 'page.screenshot', {
+      sessionId: sessionA.sessionId,
+      target: 'page',
+      fileNameHint: 'fixture-page-a',
     })
-    assert(pageScreenshot.status === 200, 'page.screenshot(page) should return 200.')
-    const pageArtifact = pageScreenshot.body?.result?.structuredContent
-    assert(typeof pageArtifact?.artifactId === 'string', 'page.screenshot(page) did not return an artifact id.')
-    assert(pageArtifact.target === 'page', 'page.screenshot(page) returned the wrong target.')
-    assert(pageArtifact.pixelWidth >= 1280, 'page.screenshot(page) did not honor the resized viewport width.')
-    assert(pageArtifact.pixelHeight >= 720, 'page.screenshot(page) did not honor the resized viewport height.')
-
-    const elementScreenshot = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'page.screenshot',
-        arguments: {
-          target: 'element',
-          selector: '.card',
-          fileNameHint: 'fixture-card',
-        },
-      },
-      11,
-    )
     state.requests.push({
-      name: 'tools/call:page.screenshot:element',
-      status: elementScreenshot.status,
-      body: elementScreenshot.body,
+      name: 'tools/call:page.screenshot:page:project-a',
+      status: pageScreenshotA.status,
+      body: pageScreenshotA.body,
     })
-    assert(elementScreenshot.status === 200, 'page.screenshot(element) should return 200.')
-    const elementArtifact = elementScreenshot.body?.result?.structuredContent
-    assert(typeof elementArtifact?.artifactId === 'string', 'page.screenshot(element) did not return an artifact id.')
-    assert(elementArtifact.target === 'element', 'page.screenshot(element) returned the wrong target.')
-    assert(elementArtifact.pixelWidth > 0, 'page.screenshot(element) returned an invalid width.')
-    assert(elementArtifact.pixelHeight > 0, 'page.screenshot(element) returned an invalid height.')
+    assert(pageScreenshotA.status === 200, 'page.screenshot(project-a page) should return 200.')
+    const pageArtifactA = pageScreenshotA.body?.result?.structuredContent
+    assert(typeof pageArtifactA?.artifactId === 'string', 'page.screenshot(project-a) did not return an artifact id.')
+    assert(pageArtifactA.target === 'page', 'page.screenshot(project-a) returned the wrong target.')
 
-    const windowScreenshot = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'page.screenshot',
-        arguments: {
-          target: 'window',
-          fileNameHint: 'fixture-window',
-        },
-      },
-      12,
-    )
-    state.requests.push({
-      name: 'tools/call:page.screenshot:window',
-      status: windowScreenshot.status,
-      body: windowScreenshot.body,
+    const pageScreenshotB = await callTool(registration, 20, 'page.screenshot', {
+      sessionId: sessionB.sessionId,
+      target: 'page',
+      fileNameHint: 'fixture-page-b',
     })
-    assert(windowScreenshot.status === 200, 'page.screenshot(window) should return 200.')
-    const windowArtifact = windowScreenshot.body?.result?.structuredContent
-    assert(typeof windowArtifact?.artifactId === 'string', 'page.screenshot(window) did not return an artifact id.')
-    assert(windowArtifact.target === 'window', 'page.screenshot(window) returned the wrong target.')
-
-    const pageArtifactRecord = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'artifacts.get',
-        arguments: {
-          artifactId: pageArtifact.artifactId,
-        },
-      },
-      13,
-    )
     state.requests.push({
-      name: 'tools/call:artifacts.get:page',
+      name: 'tools/call:page.screenshot:page:project-b',
+      status: pageScreenshotB.status,
+      body: pageScreenshotB.body,
+    })
+    assert(pageScreenshotB.status === 200, 'page.screenshot(project-b page) should return 200.')
+    const pageArtifactB = pageScreenshotB.body?.result?.structuredContent
+    assert(typeof pageArtifactB?.artifactId === 'string', 'page.screenshot(project-b) did not return an artifact id.')
+    assert(pageArtifactB.target === 'page', 'page.screenshot(project-b) returned the wrong target.')
+
+    const pageArtifactRecord = await callTool(registration, 21, 'artifacts.get', {
+      sessionId: sessionA.sessionId,
+      artifactId: pageArtifactA.artifactId,
+    })
+    state.requests.push({
+      name: 'tools/call:artifacts.get:project-a',
       status: pageArtifactRecord.status,
       body: pageArtifactRecord.body,
     })
-    assert(pageArtifactRecord.status === 200, 'artifacts.get(page) should return 200.')
+    assert(pageArtifactRecord.status === 200, 'artifacts.get(project-a) should return 200.')
     const pageArtifactFile = pageArtifactRecord.body?.result?.structuredContent?.artifact?.filePath
-    assert(typeof pageArtifactFile === 'string', 'artifacts.get(page) did not return a file path.')
-    await assertFileExists(pageArtifactFile, 'artifacts.get(page) returned a missing file path.')
+    assert(typeof pageArtifactFile === 'string', 'artifacts.get(project-a) did not return a file path.')
+    await assertFileExists(pageArtifactFile, 'artifacts.get(project-a) returned a missing file path.')
 
-    const windowArtifactRecord = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'artifacts.get',
-        arguments: {
-          artifactId: windowArtifact.artifactId,
-        },
-      },
-      14,
-    )
-    state.requests.push({
-      name: 'tools/call:artifacts.get:window',
-      status: windowArtifactRecord.status,
-      body: windowArtifactRecord.body,
+    const listedArtifacts = await callTool(registration, 22, 'artifacts.list', {
+      sessionId: sessionA.sessionId,
     })
-    assert(windowArtifactRecord.status === 200, 'artifacts.get(window) should return 200.')
-    const windowArtifactFile = windowArtifactRecord.body?.result?.structuredContent?.artifact?.filePath
-    assert(typeof windowArtifactFile === 'string', 'artifacts.get(window) did not return a file path.')
-    await assertFileExists(windowArtifactFile, 'artifacts.get(window) returned a missing file path.')
-
-    const listedArtifacts = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'artifacts.list',
-        arguments: {},
-      },
-      15,
-    )
     state.requests.push({
-      name: 'tools/call:artifacts.list',
+      name: 'tools/call:artifacts.list:project-a',
       status: listedArtifacts.status,
       body: listedArtifacts.body,
     })
-    assert(listedArtifacts.status === 200, 'artifacts.list should return 200.')
+    assert(listedArtifacts.status === 200, 'artifacts.list(project-a) should return 200.')
     const artifactIds =
       listedArtifacts.body?.result?.structuredContent?.artifacts?.map((artifact) => artifact.artifactId) ?? []
-    assert(artifactIds.includes(pageArtifact.artifactId), 'artifacts.list did not include the page screenshot artifact.')
     assert(
-      artifactIds.includes(elementArtifact.artifactId),
-      'artifacts.list did not include the element screenshot artifact.',
+      artifactIds.includes(pageArtifactA.artifactId),
+      'artifacts.list(project-a) did not include the project-a page screenshot artifact.',
     )
     assert(
-      artifactIds.includes(windowArtifact.artifactId),
-      'artifacts.list did not include the window screenshot artifact.',
+      !artifactIds.includes(pageArtifactB.artifactId),
+      'artifacts.list(project-a) unexpectedly included the project-b artifact.',
     )
 
-    const deleteArtifact = await makeRpcRequest(
-      registration,
-      'tools/call',
-      {
-        name: 'artifacts.delete',
-        arguments: {
-          artifactId: elementArtifact.artifactId,
-        },
-      },
-      16,
-    )
+    const deleteArtifact = await callTool(registration, 23, 'artifacts.delete', {
+      sessionId: sessionA.sessionId,
+      artifactId: pageArtifactA.artifactId,
+    })
     state.requests.push({
-      name: 'tools/call:artifacts.delete',
+      name: 'tools/call:artifacts.delete:project-a',
       status: deleteArtifact.status,
       body: deleteArtifact.body,
     })
-    assert(deleteArtifact.status === 200, 'artifacts.delete should return 200.')
+    assert(deleteArtifact.status === 200, 'artifacts.delete(project-a) should return 200.')
     assert(
       deleteArtifact.body?.result?.structuredContent?.artifact?.deleted === true,
-      'artifacts.delete did not confirm deletion.',
+      'artifacts.delete(project-a) did not confirm deletion.',
+    )
+
+    const closeFirstSession = await callTool(registration, 24, 'session.close', {
+      sessionId: sessionA.sessionId,
+    })
+    state.requests.push({
+      name: 'tools/call:session.close:project-a',
+      status: closeFirstSession.status,
+      body: closeFirstSession.body,
+    })
+    assert(closeFirstSession.status === 200, 'session.close(project-a) should return 200.')
+
+    const remainingSessions = await waitForSessions(
+      registration,
+      25,
+      (currentSessions) =>
+        currentSessions.length === 1 &&
+        currentSessions[0]?.sessionId === sessionB.sessionId,
+    )
+    assert(
+      remainingSessions.length === 1 && remainingSessions[0]?.sessionId === sessionB.sessionId,
+      'session.close(project-a) did not leave project-b as the remaining session.',
+    )
+
+    const navigateBAfterClose = await callTool(registration, 26, 'page.navigate', {
+      sessionId: sessionB.sessionId,
+      target: fixtureUrlBAfterClose,
+    })
+    state.requests.push({
+      name: 'tools/call:page.navigate:project-b-after-close',
+      status: navigateBAfterClose.status,
+      body: navigateBAfterClose.body,
+    })
+    assert(
+      navigateBAfterClose.status === 200,
+      'page.navigate(project-b after close) should still return 200.',
+    )
+    assert(
+      navigateBAfterClose.body?.result?.structuredContent?.navigation?.url === fixtureUrlBAfterClose,
+      'page.navigate(project-b after close) did not keep the remaining session usable.',
     )
 
     console.log(
@@ -860,18 +1010,31 @@ const run = async () => {
           runtime,
           registration,
           verifiedTools: toolNames,
-          appearance: {
-            projectRoot: initialAppearanceState.projectRoot,
-            chromeColor: initialAppearanceState.chromeColor,
-            accentColor: updatedAppearanceState.accentColor,
-            projectIconPath: initialAppearanceState.projectIconPath,
+          sessions: {
+            projectA: {
+              sessionId: sessionA.sessionId,
+              projectRoot: initialAppearanceStateA.projectRoot,
+              chromeColor: initialAppearanceStateA.chromeColor,
+              accentColor: updatedAppearanceState.accentColor,
+              projectIconPath: initialAppearanceStateA.projectIconPath,
+            },
+            projectB: {
+              sessionId: sessionB.sessionId,
+              projectRoot: initialAppearanceStateB.projectRoot,
+              chromeColor: initialAppearanceStateB.chromeColor,
+              accentColor: initialAppearanceStateB.accentColor,
+              projectIconPath: initialAppearanceStateB.projectIconPath,
+            },
           },
-          navigatedUrl: fixtureUrl,
+          navigatedUrls: {
+            projectA: fixtureUrlA,
+            projectB: fixtureUrlB,
+            projectBAfterClose: fixtureUrlBAfterClose,
+          },
           markdownTitle: markdown.body.result.structuredContent.title,
           artifactIds: {
-            page: pageArtifact.artifactId,
-            element: elementArtifact.artifactId,
-            window: windowArtifact.artifactId,
+            projectA: pageArtifactA.artifactId,
+            projectB: pageArtifactB.artifactId,
           },
         },
         null,
@@ -894,6 +1057,7 @@ const run = async () => {
     process.exitCode = 1
   } finally {
     await terminateChild(child, exitPromise)
+    await terminateSessionProcesses(clusterDir)
     await rm(smokeDir, { recursive: true, force: true })
   }
 }

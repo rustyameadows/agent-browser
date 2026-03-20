@@ -21,6 +21,7 @@ import type {
   PickerCommand,
   PickerState,
   ResizeWindowRequest,
+  SessionSummary,
   ScreenshotArtifact,
   ScreenshotRequest,
   WindowState,
@@ -61,20 +62,40 @@ export interface ToolTabSnapshot {
   isLoading: boolean;
 }
 
+type Awaitable<T> = T | Promise<T>;
+
 export interface ToolServerRuntime {
-  listTabs(): ToolTabSnapshot[];
-  executeNavigationCommand(command: NavigationCommand): Promise<NavigationState>;
-  executePickerCommand(command: PickerCommand): Promise<PickerState>;
-  getPickerState(): PickerState;
-  executeChromeAppearanceCommand(command: ChromeAppearanceCommand): Promise<ChromeAppearanceState>;
-  getChromeAppearanceState(): ChromeAppearanceState;
-  executeFeedbackCommand(command: FeedbackCommand): Promise<FeedbackState>;
-  getFeedbackState(): FeedbackState;
-  getMarkdownForCurrentPage(forceRefresh?: boolean): Promise<MarkdownViewState>;
-  getWindowState(): WindowState;
-  resizeWindow(request: ResizeWindowRequest): Promise<WindowState>;
-  captureScreenshot(request: ScreenshotRequest): Promise<BrowserScreenshotCapture>;
+  listTabs(sessionId?: string): Awaitable<ToolTabSnapshot[]>;
+  executeNavigationCommand(command: NavigationCommand, sessionId?: string): Promise<NavigationState>;
+  executePickerCommand(command: PickerCommand, sessionId?: string): Promise<PickerState>;
+  getPickerState(sessionId?: string): Awaitable<PickerState>;
+  executeChromeAppearanceCommand(
+    command: ChromeAppearanceCommand,
+    sessionId?: string,
+  ): Promise<ChromeAppearanceState>;
+  getChromeAppearanceState(sessionId?: string): Awaitable<ChromeAppearanceState>;
+  executeFeedbackCommand(command: FeedbackCommand, sessionId?: string): Promise<FeedbackState>;
+  getFeedbackState(sessionId?: string): Awaitable<FeedbackState>;
+  getMarkdownForCurrentPage(forceRefresh?: boolean, sessionId?: string): Promise<MarkdownViewState>;
+  getWindowState(sessionId?: string): Awaitable<WindowState>;
+  resizeWindow(request: ResizeWindowRequest, sessionId?: string): Promise<WindowState>;
+  captureScreenshot(request: ScreenshotRequest, sessionId?: string): Promise<BrowserScreenshotCapture>;
+  listSessions?(): Awaitable<SessionSummary[]>;
+  getCurrentSession?(): Awaitable<SessionSummary | null>;
+  openSession?(projectRoot?: string): Awaitable<SessionSummary[]>;
+  focusSession?(sessionId: string): Awaitable<SessionSummary | null>;
+  closeSession?(sessionId: string): Awaitable<SessionSummary[]>;
+  proxyToolCall?(
+    sessionId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown>;
 }
+
+type ToolServerInternalControl = {
+  focusWindow(): Promise<void> | void;
+  closeWindow(): Promise<void> | void;
+};
 
 export interface ToolServerConnectionInfo {
   url: string;
@@ -125,7 +146,126 @@ const DEFAULT_PROGRESS_MESSAGE: Record<McpAgentActivityPhase, string> = {
   done: 'Agent marked this complete.',
 };
 
-const TOOL_DEFINITIONS: ToolDefinition[] = [
+const SESSION_SCOPED_TOOL_NAMES = new Set([
+  'browser.listTabs',
+  'page.navigate',
+  'page.reload',
+  'picker.enable',
+  'picker.disable',
+  'picker.lastSelection',
+  'chrome.getAppearance',
+  'chrome.setAppearance',
+  'chrome.resetAppearance',
+  'feedback.getState',
+  'feedback.list',
+  'feedback.create',
+  'feedback.reply',
+  'feedback.progress',
+  'feedback.setStatus',
+  'page.viewAsMarkdown',
+  'page.screenshot',
+  'browser.getWindowState',
+  'browser.resizeWindow',
+  'artifacts.get',
+  'artifacts.list',
+  'artifacts.delete',
+]);
+
+const SESSION_TOOL_DEFINITIONS: ToolDefinition[] = [
+  {
+    name: 'session.list',
+    description: 'List the currently open Loop Browser project sessions.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'session.open',
+    description: 'Open a project folder as a new Loop Browser project session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectRoot: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'session.focus',
+    description: 'Focus an existing Loop Browser project session by session id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string' },
+      },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'session.close',
+    description: 'Close an existing Loop Browser project session by session id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string' },
+      },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'session.getCurrent',
+    description: 'Return the currently focused Loop Browser project session.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+];
+
+const withRequiredSessionId = (definition: ToolDefinition): ToolDefinition => {
+  const properties = isRecord(definition.inputSchema.properties)
+    ? { ...definition.inputSchema.properties }
+    : {};
+  const required = Array.isArray(definition.inputSchema.required)
+    ? [...definition.inputSchema.required]
+    : [];
+
+  properties.sessionId = { type: 'string' };
+  if (!required.includes('sessionId')) {
+    required.push('sessionId');
+  }
+
+  return {
+    ...definition,
+    inputSchema: {
+      ...definition.inputSchema,
+      properties,
+      required,
+    },
+  };
+};
+
+const buildToolDefinitions = (options: {
+  requireSessionId: boolean;
+  includeSessionTools: boolean;
+}): ToolDefinition[] => {
+  const scopedDefinitions = BASE_TOOL_DEFINITIONS.map((definition) =>
+    options.requireSessionId && SESSION_SCOPED_TOOL_NAMES.has(definition.name)
+      ? withRequiredSessionId(definition)
+      : definition,
+  );
+
+  return options.includeSessionTools
+    ? [...SESSION_TOOL_DEFINITIONS, ...scopedDefinitions]
+    : scopedDefinitions;
+};
+
+const BASE_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'browser.listTabs',
     description: 'List the browser tabs currently available in the running app.',
@@ -487,6 +627,9 @@ export class ToolServer {
   private readonly busyHoldMs: number;
   private readonly logger: Pick<Console, 'error' | 'info' | 'warn'>;
   private readonly artifactStore: ArtifactStore;
+  private readonly requireSessionId: boolean;
+  private readonly toolDefinitions: ToolDefinition[];
+  private readonly internalControl: ToolServerInternalControl | null;
   private readonly diagnosticsListeners = new Set<
     (snapshot: ToolServerDiagnosticsSnapshot) => void
   >();
@@ -502,6 +645,9 @@ export class ToolServer {
     port?: number;
     busyHoldMs?: number;
     logger?: Pick<Console, 'error' | 'info' | 'warn'>;
+    requireSessionId?: boolean;
+    includeSessionTools?: boolean;
+    internalControl?: ToolServerInternalControl;
   }) {
     this.runtime = options.runtime;
     this.storageDir = options.storageDir;
@@ -510,6 +656,12 @@ export class ToolServer {
     this.busyHoldMs = options.busyHoldMs ?? DEFAULT_BUSY_HOLD_MS;
     this.logger = options.logger ?? console;
     this.artifactStore = new ArtifactStore(this.storageDir);
+    this.requireSessionId = options.requireSessionId ?? false;
+    this.toolDefinitions = buildToolDefinitions({
+      requireSessionId: this.requireSessionId,
+      includeSessionTools: options.includeSessionTools ?? false,
+    });
+    this.internalControl = options.internalControl ?? null;
     this.diagnostics = {
       lifecycle: 'starting',
       url: null,
@@ -517,7 +669,7 @@ export class ToolServer {
       port: this.port > 0 ? this.port : null,
       token: null,
       registrationFile: null,
-      tools: TOOL_DEFINITIONS.map((tool) => tool.name),
+      tools: this.toolDefinitions.map((tool) => tool.name),
       requestCount: 0,
       lastRequestAt: null,
       recentRequests: [],
@@ -599,7 +751,7 @@ export class ToolServer {
               Authorization: `Bearer ${token}`,
             },
           },
-          tools: TOOL_DEFINITIONS.map((tool) => tool.name),
+          tools: this.toolDefinitions.map((tool) => tool.name),
         },
         null,
         2,
@@ -778,7 +930,7 @@ export class ToolServer {
       };
 
       const returnedTools = toolsPayload.result?.tools?.map((tool) => tool.name ?? '') ?? [];
-      toolsListOk = TOOL_DEFINITIONS.every((tool) => returnedTools.includes(tool.name));
+      toolsListOk = this.toolDefinitions.every((tool) => returnedTools.includes(tool.name));
 
       if (!toolsListOk) {
         throw new Error('tools/list did not return the expected tool inventory.');
@@ -940,13 +1092,45 @@ export class ToolServer {
         };
       case 'tools/list':
         return {
-          tools: TOOL_DEFINITIONS,
+          tools: this.toolDefinitions,
         };
       case 'tools/call':
         return this.executeToolCall(params);
+      case 'internal/sessionFocus':
+        if (!this.internalControl) {
+          throw new Error('Internal session focus is unavailable.');
+        }
+        await this.internalControl.focusWindow();
+        return { ok: true };
+      case 'internal/sessionClose':
+        if (!this.internalControl) {
+          throw new Error('Internal session close is unavailable.');
+        }
+        await this.internalControl.closeWindow();
+        return { ok: true };
       default:
         throw new Error(`Unknown JSON-RPC method: ${method}`);
     }
+  }
+
+  private resolveSessionId(argsToolName: string, args: Record<string, unknown>): string | undefined {
+    if (!SESSION_SCOPED_TOOL_NAMES.has(argsToolName)) {
+      return typeof args.sessionId === 'string' && args.sessionId.trim().length > 0
+        ? args.sessionId
+        : undefined;
+    }
+
+    if (!this.requireSessionId) {
+      return typeof args.sessionId === 'string' && args.sessionId.trim().length > 0
+        ? args.sessionId
+        : undefined;
+    }
+
+    if (typeof args.sessionId !== 'string' || args.sessionId.trim().length === 0) {
+      throw new Error(`Tool ${argsToolName} requires sessionId. Call session.list first.`);
+    }
+
+    return args.sessionId;
   }
 
   private async executeToolCall(params: unknown): Promise<unknown> {
@@ -955,10 +1139,63 @@ export class ToolServer {
     }
 
     const args = isRecord(params.arguments) ? params.arguments : {};
+    const sessionId = this.resolveSessionId(params.name, args);
+
+    if (
+      sessionId &&
+      this.requireSessionId &&
+      SESSION_SCOPED_TOOL_NAMES.has(params.name) &&
+      this.runtime.proxyToolCall
+    ) {
+      return this.runtime.proxyToolCall(sessionId, params.name, args);
+    }
 
     switch (params.name) {
+      case 'session.list':
+        if (!this.runtime.listSessions) {
+          throw new Error('Session listing is unavailable in this runtime.');
+        }
+        return toolResult({
+          sessions: await this.runtime.listSessions(),
+        });
+      case 'session.open':
+        if (!this.runtime.openSession) {
+          throw new Error('Session opening is unavailable in this runtime.');
+        }
+        return toolResult({
+          sessions: await this.runtime.openSession(
+            typeof args.projectRoot === 'string' ? args.projectRoot : undefined,
+          ),
+        });
+      case 'session.focus':
+        if (!this.runtime.focusSession) {
+          throw new Error('Session focusing is unavailable in this runtime.');
+        }
+        if (typeof args.sessionId !== 'string' || args.sessionId.trim().length === 0) {
+          throw new Error('session.focus requires a non-empty sessionId.');
+        }
+        return toolResult({
+          session: await this.runtime.focusSession(args.sessionId),
+        });
+      case 'session.close':
+        if (!this.runtime.closeSession) {
+          throw new Error('Session closing is unavailable in this runtime.');
+        }
+        if (typeof args.sessionId !== 'string' || args.sessionId.trim().length === 0) {
+          throw new Error('session.close requires a non-empty sessionId.');
+        }
+        return toolResult({
+          sessions: await this.runtime.closeSession(args.sessionId),
+        });
+      case 'session.getCurrent':
+        if (!this.runtime.getCurrentSession) {
+          throw new Error('Current session inspection is unavailable in this runtime.');
+        }
+        return toolResult({
+          session: await this.runtime.getCurrentSession(),
+        });
       case 'browser.listTabs':
-        return toolResult({ tabs: this.runtime.listTabs() });
+        return toolResult({ tabs: await this.runtime.listTabs(sessionId) });
       case 'page.navigate':
         if (typeof args.target !== 'string' || args.target.trim().length === 0) {
           throw new Error('page.navigate requires a non-empty target.');
@@ -968,29 +1205,29 @@ export class ToolServer {
           navigation: await this.runtime.executeNavigationCommand({
             action: 'navigate',
             target: args.target,
-          }),
+          }, sessionId),
         });
       case 'page.reload':
         return toolResult({
           navigation: await this.runtime.executeNavigationCommand({
             action: 'reload',
-          }),
+          }, sessionId),
         });
       case 'picker.enable':
         return toolResult({
-          picker: await this.runtime.executePickerCommand({ action: 'enable' }),
+          picker: await this.runtime.executePickerCommand({ action: 'enable' }, sessionId),
         });
       case 'picker.disable':
         return toolResult({
-          picker: await this.runtime.executePickerCommand({ action: 'disable' }),
+          picker: await this.runtime.executePickerCommand({ action: 'disable' }, sessionId),
         });
       case 'picker.lastSelection':
         return toolResult({
-          picker: this.runtime.getPickerState(),
+          picker: await this.runtime.getPickerState(sessionId),
         });
       case 'chrome.getAppearance':
         return toolResult({
-          appearance: this.runtime.getChromeAppearanceState(),
+          appearance: await this.runtime.getChromeAppearanceState(sessionId),
         });
       case 'chrome.setAppearance': {
         if (
@@ -1010,21 +1247,21 @@ export class ToolServer {
             accentColor: typeof args.accentColor === 'string' ? args.accentColor : undefined,
             projectIconPath:
               typeof args.projectIconPath === 'string' ? args.projectIconPath : undefined,
-          }),
+          }, sessionId),
         });
       }
       case 'chrome.resetAppearance':
         return toolResult({
           appearance: await this.runtime.executeChromeAppearanceCommand({
             action: 'reset',
-          }),
+          }, sessionId),
         });
       case 'feedback.getState':
         return toolResult({
-          feedback: this.runtime.getFeedbackState(),
+          feedback: await this.runtime.getFeedbackState(sessionId),
         });
       case 'feedback.list': {
-        const state = this.runtime.getFeedbackState();
+        const state = await this.runtime.getFeedbackState(sessionId);
         const annotations =
           typeof args.status === 'string'
             ? state.annotations.filter((annotation) => annotation.status === args.status)
@@ -1032,7 +1269,7 @@ export class ToolServer {
         return toolResult({ annotations });
       }
       case 'feedback.create': {
-        const selection = this.runtime.getPickerState().lastSelection;
+        const selection = (await this.runtime.getPickerState(sessionId)).lastSelection;
         if (!selection) {
           throw new Error('feedback.create requires an existing picker selection.');
         }
@@ -1040,7 +1277,7 @@ export class ToolServer {
         await this.runtime.executeFeedbackCommand({
           action: 'startDraftFromSelection',
           selection,
-        });
+        }, sessionId);
         await this.runtime.executeFeedbackCommand({
           action: 'updateDraft',
           summary: typeof args.summary === 'string' ? args.summary : undefined,
@@ -1059,8 +1296,8 @@ export class ToolServer {
             args.priority === 'critical'
               ? args.priority
               : undefined,
-        });
-        const feedback = await this.runtime.executeFeedbackCommand({ action: 'submitDraft' });
+        }, sessionId);
+        const feedback = await this.runtime.executeFeedbackCommand({ action: 'submitDraft' }, sessionId);
         return toolResult({
           feedback,
           annotation: feedback.annotations[0] ?? null,
@@ -1084,7 +1321,7 @@ export class ToolServer {
               args.author === 'human' || args.author === 'system' || args.author === 'agent'
                 ? args.author
                 : 'agent',
-          }),
+          }, sessionId),
         });
       case 'feedback.progress': {
         if (typeof args.annotationId !== 'string' || args.annotationId.trim().length === 0) {
@@ -1099,7 +1336,7 @@ export class ToolServer {
           throw new Error('feedback.progress requires a valid phase.');
         }
 
-        const currentState = this.runtime.getFeedbackState();
+        const currentState = await this.runtime.getFeedbackState(sessionId);
         const annotation = currentState.annotations.find(
           (entry) => entry.id === args.annotationId,
         );
@@ -1118,13 +1355,13 @@ export class ToolServer {
           action: 'setStatus',
           annotationId: annotation.id,
           status: PROGRESS_STATUS_BY_PHASE[phase],
-        });
+        }, sessionId);
         const feedback = await this.runtime.executeFeedbackCommand({
           action: 'reply',
           annotationId: annotation.id,
           body: message,
           author: 'agent',
-        });
+        }, sessionId);
         const updatedAt = nowIso();
         const agentActivity = {
           annotationId: annotation.id,
@@ -1164,11 +1401,12 @@ export class ToolServer {
             action: 'setStatus',
             annotationId: args.annotationId,
             status: args.status,
-          }),
+          }, sessionId),
         });
       case 'page.viewAsMarkdown': {
         const markdownView = await this.runtime.getMarkdownForCurrentPage(
           typeof args.forceRefresh === 'boolean' ? args.forceRefresh : false,
+          sessionId,
         );
 
         if (markdownView.status !== 'ready') {
@@ -1189,13 +1427,13 @@ export class ToolServer {
           throw new Error('page.screenshot requires a valid screenshot request.');
         }
 
-        const capture = await this.runtime.captureScreenshot(args);
+        const capture = await this.runtime.captureScreenshot(args, sessionId);
         const artifact = await this.saveScreenshotArtifact(capture);
         return toolResult(artifact);
       }
       case 'browser.getWindowState':
         return toolResult({
-          window: this.runtime.getWindowState(),
+          window: await this.runtime.getWindowState(sessionId),
         });
       case 'browser.resizeWindow': {
         if (!isResizeWindowRequest(args)) {
@@ -1203,7 +1441,7 @@ export class ToolServer {
         }
 
         return toolResult({
-          window: await this.runtime.resizeWindow(args),
+          window: await this.runtime.resizeWindow(args, sessionId),
         });
       }
       case 'artifacts.get':

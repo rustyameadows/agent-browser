@@ -3,8 +3,11 @@ import path from 'node:path'
 import { deriveProjectUserDataDir } from './project-appearance'
 
 export const DEFAULT_TOOL_SERVER_PORT = 46255
+export const runtimeRoles = ['launcher', 'project-session'] as const
+export type RuntimeRole = (typeof runtimeRoles)[number]
 
 export interface RuntimeConfig {
+  role: RuntimeRole
   projectRoot: string | null
   userDataDir: string | null
   toolServerPort: number
@@ -31,12 +34,21 @@ const parsePort = (value: string | null): number => {
   return parsed
 }
 
+const parseRole = (value: string | undefined): RuntimeRole => {
+  if (value === 'project-session') {
+    return 'project-session'
+  }
+
+  return 'launcher'
+}
+
 export const resolveRuntimeConfig = (
   env: NodeJS.ProcessEnv,
   cwd = process.cwd(),
   homeDir = os.homedir(),
   platform = process.platform,
 ): RuntimeConfig => {
+  const role = parseRole(env.LOOP_BROWSER_ROLE)
   const projectRootValue = normalizeOptionalValue(env.AGENT_BROWSER_PROJECT_ROOT)
   const userDataDir = normalizeOptionalValue(env.AGENT_BROWSER_USER_DATA_DIR)
   const startUrl = normalizeOptionalValue(env.AGENT_BROWSER_START_URL)
@@ -47,10 +59,11 @@ export const resolveRuntimeConfig = (
     : null
 
   return {
+    role,
     projectRoot,
     userDataDir: userDataDir
       ? (path.isAbsolute(userDataDir) ? path.resolve(userDataDir) : path.resolve(cwd, userDataDir))
-      : projectRoot
+      : role === 'project-session' && projectRoot
         ? deriveProjectUserDataDir(projectRoot, platform, homeDir)
         : null,
     toolServerPort: parsePort(normalizeOptionalValue(env.AGENT_BROWSER_TOOL_SERVER_PORT)),

@@ -2,6 +2,7 @@ import type { McpAgentActivityPhase, McpViewCommand, McpViewState } from './mcp'
 import type { MarkdownViewCommand, MarkdownViewState } from './markdown';
 import type { FeedbackCommand, FeedbackState } from './feedback';
 import type { ChromeAppearanceCommand, ChromeAppearanceState } from './appearance';
+import type { SessionCommand, SessionViewState } from './session';
 
 export const NAVIGATION_COMMAND_CHANNEL = 'navigation:command';
 export const NAVIGATION_GET_STATE_CHANNEL = 'navigation:get-state';
@@ -105,6 +106,9 @@ export interface NavigationBridge {
   execute(command: NavigationCommand): Promise<NavigationState>;
   getState(): Promise<NavigationState>;
   subscribe(listener: (state: NavigationState) => void): () => void;
+  executeSession(command: SessionCommand): Promise<SessionViewState>;
+  getSessionState(): Promise<SessionViewState>;
+  subscribeSessions(listener: (state: SessionViewState) => void): () => void;
   executePicker(command: PickerCommand): Promise<PickerState>;
   getPickerState(): Promise<PickerState>;
   subscribePicker(listener: (state: PickerState) => void): () => void;

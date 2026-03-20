@@ -9,6 +9,7 @@ import { deriveProjectUserDataDir } from '../src/main/project-appearance'
 describe('resolveRuntimeConfig', () => {
   it('returns defaults when no overrides are present', () => {
     expect(resolveRuntimeConfig({}, '/tmp/loop-project', '/Users/tester', 'darwin')).toEqual({
+      role: 'launcher',
       projectRoot: null,
       userDataDir: null,
       toolServerPort: DEFAULT_TOOL_SERVER_PORT,
@@ -25,6 +26,7 @@ describe('resolveRuntimeConfig', () => {
         AGENT_BROWSER_START_URL: 'about:blank',
       }, '/tmp/loop-project'),
     ).toEqual({
+      role: 'launcher',
       projectRoot: '/tmp/loop-project/projects/client-a',
       userDataDir: '/tmp/loop-project/tmp/agent-browser-smoke',
       toolServerPort: 49_152,
@@ -32,12 +34,28 @@ describe('resolveRuntimeConfig', () => {
     })
   })
 
-  it('derives a project-scoped user data directory when only a project root override is present', () => {
+  it('keeps launcher userData unset when only a project root override is present', () => {
     expect(
       resolveRuntimeConfig({
         AGENT_BROWSER_PROJECT_ROOT: '/tmp/loop-project',
       }, '/tmp/ignored', '/Users/tester', 'darwin'),
     ).toEqual({
+      role: 'launcher',
+      projectRoot: '/tmp/loop-project',
+      userDataDir: null,
+      toolServerPort: DEFAULT_TOOL_SERVER_PORT,
+      startUrl: null,
+    })
+  })
+
+  it('derives a project-scoped user data directory for project-session role', () => {
+    expect(
+      resolveRuntimeConfig({
+        LOOP_BROWSER_ROLE: 'project-session',
+        AGENT_BROWSER_PROJECT_ROOT: '/tmp/loop-project',
+      }, '/tmp/ignored', '/Users/tester', 'darwin'),
+    ).toEqual({
+      role: 'project-session',
       projectRoot: '/tmp/loop-project',
       userDataDir: deriveProjectUserDataDir('/tmp/loop-project', 'darwin', '/Users/tester'),
       toolServerPort: DEFAULT_TOOL_SERVER_PORT,
