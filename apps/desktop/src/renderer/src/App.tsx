@@ -30,6 +30,11 @@ import {
   projectIconSrc,
 } from './chrome-appearance-theme';
 import {
+  getDockIconArtMaskRadius,
+  getDockIconLayoutMetrics,
+  resolveDefaultDockIconColor,
+} from '../../shared/dock-icon-style';
+import {
   getColorPickerValue,
   getHexColorDraftError,
   normalizeHexColorDraft,
@@ -44,7 +49,6 @@ const emptyMarkdownState = createEmptyMarkdownViewState();
 const emptyMcpState = createEmptyMcpViewState();
 const stubTabs = ['Agent Chat', 'Inspector'];
 const AGENT_DONE_PULSE_MS = 1600;
-const DEFAULT_DOCK_ICON_COLOR = '#000000';
 
 type SurfaceMode = 'chrome' | 'markdown' | 'mcp' | 'feedback' | 'project';
 
@@ -1461,12 +1465,31 @@ const ProjectSurface = ({
     chromeColor: effectiveChromeColor,
     accentColor: effectiveAccentColor,
   });
-  const previewFallbackIconColor =
-    effectiveChromeColor === DEFAULT_CHROME_COLOR
-      ? DEFAULT_DOCK_ICON_COLOR
-      : previewTheme.previewIconFallbackBg;
+  const previewFallbackIconColor = resolveDefaultDockIconColor(effectiveChromeColor);
   const previewFallbackIconLabel =
     effectiveChromeColor === DEFAULT_CHROME_COLOR ? 'Default black icon' : 'Chrome color icon';
+  const previewIconLayout = getDockIconLayoutMetrics(72);
+  const previewTileStyle = {
+    width: `${previewIconLayout.tileSize}px`,
+    height: `${previewIconLayout.tileSize}px`,
+    borderRadius: `${previewIconLayout.tileRadius}px`,
+    backgroundColor: previewFallbackIconColor,
+    left: `${previewIconLayout.tileX}px`,
+    top: `${previewIconLayout.tileY}px`,
+  } satisfies CSSProperties;
+  const previewTileLightStyle = {
+    height: `${previewIconLayout.topLightHeight}px`,
+  } satisfies CSSProperties;
+  const previewTileHighlightStyle = {
+    inset: `${previewIconLayout.highlightInset}px`,
+    borderRadius: `${Math.max(0, previewIconLayout.tileRadius - previewIconLayout.highlightInset)}px`,
+    boxShadow: `inset 0 0 0 ${previewIconLayout.highlightWidth}px rgba(255, 255, 255, 0.18)`,
+  } satisfies CSSProperties;
+  const previewArtworkStyle = {
+    width: `${previewIconLayout.artMaxSize}px`,
+    height: `${previewIconLayout.artMaxSize}px`,
+    borderRadius: `${getDockIconArtMaskRadius(previewIconLayout.artMaxSize)}px`,
+  } satisfies CSSProperties;
   const draftProjectIconPreviewSrc = projectIconSrc(
     resolveDraftProjectIconPath(
       chromeAppearanceState.projectRoot,
@@ -1789,28 +1812,22 @@ const ProjectSurface = ({
                 />
               </div>
               <div className="projectSurface__previewBody">
-                <div
-                  className="projectSurface__previewIconWrap"
-                  style={{ backgroundColor: previewTheme.previewIconWrapBg }}
-                >
-                  {draftProjectIconPreviewSrc ? (
-                    <img
-                      alt=""
-                      className="projectSurface__previewIcon"
-                      src={draftProjectIconPreviewSrc}
-                    />
-                  ) : (
+                <div className="projectSurface__previewIconCanvas">
+                  <div className="projectSurface__previewIconTile" style={previewTileStyle}>
+                    <div className="projectSurface__previewIconTopLight" style={previewTileLightStyle} />
                     <div
-                      className="projectSurface__previewIconFallback"
-                      style={{
-                        backgroundColor: previewFallbackIconColor,
-                        color:
-                          previewFallbackIconColor === DEFAULT_DOCK_ICON_COLOR
-                            ? '#FFFFFF'
-                            : previewTheme.previewIconFallbackFg,
-                      }}
+                      className="projectSurface__previewIconHighlight"
+                      style={previewTileHighlightStyle}
                     />
-                  )}
+                    {draftProjectIconPreviewSrc ? (
+                      <img
+                        alt=""
+                        className="projectSurface__previewIconArtwork"
+                        src={draftProjectIconPreviewSrc}
+                        style={previewArtworkStyle}
+                      />
+                    ) : null}
+                  </div>
                 </div>
                 <div className="projectSurface__previewCopy">
                   <div

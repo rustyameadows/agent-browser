@@ -999,35 +999,35 @@ a {
   gap: 14px;
 }
 
-.projectSurface__previewIconWrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.projectSurface__previewIconCanvas {
+  position: relative;
   width: 72px;
   height: 72px;
-  border-radius: 22px;
-  background: var(--preview-icon-wrap-bg);
-  box-shadow: var(--shadow);
 }
 
-.projectSurface__previewIcon,
-.projectSurface__previewIconFallback {
-  width: 56px;
-  height: 56px;
-  border-radius: 18px;
+.projectSurface__previewIconTile {
+  position: absolute;
+  overflow: hidden;
 }
 
-.projectSurface__previewIcon {
-  object-fit: cover;
+.projectSurface__previewIconTopLight {
+  position: absolute;
+  inset: 0 0 auto 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0));
+  pointer-events: none;
 }
 
-.projectSurface__previewIconFallback {
-  display: grid;
-  place-items: center;
-  color: var(--preview-icon-fallback-fg);
-  font-size: 13px;
-  font-weight: 700;
-  background: var(--preview-icon-fallback-bg);
+.projectSurface__previewIconHighlight {
+  position: absolute;
+  pointer-events: none;
+}
+
+.projectSurface__previewIconArtwork {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  object-fit: contain;
+  transform: translate(-50%, -50%);
 }
 
 .projectSurface__previewCopy {
