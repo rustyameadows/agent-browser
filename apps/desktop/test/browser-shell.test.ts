@@ -1,16 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createEmptyChromeAppearanceState,
   createEmptyFeedbackState,
   createEmptyMarkdownViewState,
   createEmptyMcpViewState,
 } from '@agent-browser/protocol';
-import { dialog } from 'electron';
+import { app, dialog, nativeImage } from 'electron';
 
 vi.mock('electron', () => ({
   BaseWindow: class {},
   WebContentsView: class {},
   app: {
+    dock: {
+      setIcon: vi.fn(),
+    },
     getAppPath: () => '/tmp/app',
     getPath: () => '/tmp/user-data',
     isPackaged: false,
@@ -39,13 +45,21 @@ vi.mock('electron', () => ({
     openExternal: vi.fn(),
   },
   nativeImage: {
+    createFromBitmap: vi.fn(() => ({
+      isEmpty: () => false,
+    })),
     createFromBuffer: vi.fn(() => ({
+      isEmpty: () => false,
+    })),
+    createFromDataURL: vi.fn(() => ({
       isEmpty: () => false,
     })),
   },
 }));
 
 import { BrowserShell } from '../src/main/browser-shell';
+
+const tempDirs: string[] = [];
 
 const createFakePanelView = () => ({
   setBounds: vi.fn(),
@@ -91,6 +105,12 @@ const createProjectAppearanceRuntime = () => {
         chromeColor: update.chromeColor ?? state.chromeColor,
         accentColor: update.accentColor ?? state.accentColor,
         projectIconPath: update.projectIconPath ?? state.projectIconPath,
+        resolvedProjectIconPath:
+          update.projectIconPath === undefined
+            ? state.resolvedProjectIconPath
+            : update.projectIconPath
+              ? path.join('/tmp/project', update.projectIconPath.replace(/^\.\//, ''))
+              : null,
       };
       return state;
     },
@@ -136,6 +156,14 @@ type BrowserShellHarness = {
 describe('BrowserShell', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await Promise.all(
+      tempDirs.splice(0).map(async (directory) => {
+        await rm(directory, { recursive: true, force: true });
+      }),
+    );
   });
 
   it('maps attached MCP diagnostics into trusted UI state', () => {
@@ -479,5 +507,118 @@ describe('BrowserShell', () => {
     await expect(shell.browseProjectIcon()).rejects.toThrow(
       'Selected icon must be inside the current project folder.',
     );
+  });
+
+  it('updates the macOS dock icon when a saved project icon exists', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'loop-browser-browser-shell-'));
+    tempDirs.push(tempDir);
+
+    const projectRoot = tempDir;
+    const projectIconPath = path.join(projectRoot, 'red-square.svg');
+    await writeFile(
+      projectIconPath,
+      '<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg"><rect width="512" height="512" fill="red"/></svg>',
+      'utf8',
+    );
+
+    let state = {
+      ...createEmptyChromeAppearanceState(),
+      projectRoot,
+      configPath: path.join(projectRoot, '.loop-browser.json'),
+      chromeColor: '#FF0ADE',
+    };
+    const listeners = new Set<(nextState: typeof state) => void>();
+    const projectAppearance = {
+      getState: () => state,
+      subscribe: (listener: (nextState: typeof state) => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+      selectProject: async () => state,
+      setAppearance: async (update: {
+        chromeColor?: string;
+        accentColor?: string;
+        projectIconPath?: string;
+      }) => {
+        state = {
+          ...state,
+          chromeColor: update.chromeColor ?? state.chromeColor,
+          accentColor: update.accentColor ?? state.accentColor,
+          projectIconPath: update.projectIconPath ?? state.projectIconPath,
+          resolvedProjectIconPath:
+            update.projectIconPath === undefined
+              ? state.resolvedProjectIconPath
+              : update.projectIconPath
+                ? path.join(projectRoot, update.projectIconPath.replace(/^\.\//, ''))
+                : null,
+        };
+        for (const listener of listeners) {
+          listener(state);
+        }
+        return state;
+      },
+      resetAppearance: async () => state,
+      dispose: () => undefined,
+    };
+
+    const shell = new BrowserShell({
+      projectAppearance,
+      dockIconTemplatePath: path.resolve('apps/desktop/static/dock-icon-template.svg'),
+    });
+    const subject = shell as unknown as BrowserShellHarness & {
+      window: {
+        contentView: {
+          addChildView: ReturnType<typeof vi.fn>;
+          removeChildView: ReturnType<typeof vi.fn>;
+        };
+        setBackgroundColor: ReturnType<typeof vi.fn>;
+        isDestroyed: () => boolean;
+      } | null;
+    };
+
+    subject.window = {
+      contentView: {
+        addChildView: vi.fn(),
+        removeChildView: vi.fn(),
+      },
+      setBackgroundColor: vi.fn(),
+      isDestroyed: () => false,
+    };
+
+    await shell.executeChromeAppearanceCommand({
+      action: 'set',
+      projectIconPath: './red-square.svg',
+    });
+
+    await vi.waitFor(() => {
+      expect(app.dock?.setIcon).toHaveBeenCalled();
+    });
+  });
+
+  it('surfaces a dock icon error when Electron creates an empty dock image', async () => {
+    vi.mocked(nativeImage.createFromDataURL).mockReturnValue({
+      isEmpty: () => true,
+    } as ReturnType<typeof nativeImage.createFromDataURL>);
+
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+      dockIconTemplatePath: path.resolve('apps/desktop/static/dock-icon-template.svg'),
+    });
+
+    await shell.executeChromeAppearanceCommand({
+      action: 'set',
+      projectIconPath: './project-icon.svg',
+    });
+
+    await vi.waitFor(() => {
+      expect(shell.getChromeAppearanceState().dockIconStatus).toBe('failed');
+    });
+
+    const state = shell.getChromeAppearanceState();
+    expect(state.dockIconSource).toBe('projectIcon');
+    expect(state.dockIconLastError).toContain('Could not compose project dock icon');
+    expect(state.lastError).toContain('Could not compose project dock icon');
   });
 });

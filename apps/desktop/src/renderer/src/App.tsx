@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type FormEvent, type JSX, type SVGProps } from 'react';
 import {
+  DEFAULT_CHROME_COLOR,
   createEmptyChromeAppearanceState,
   createEmptyFeedbackState,
   createEmptyMcpViewState,
@@ -43,6 +44,7 @@ const emptyMarkdownState = createEmptyMarkdownViewState();
 const emptyMcpState = createEmptyMcpViewState();
 const stubTabs = ['Agent Chat', 'Inspector'];
 const AGENT_DONE_PULSE_MS = 1600;
+const DEFAULT_DOCK_ICON_COLOR = '#000000';
 
 type SurfaceMode = 'chrome' | 'markdown' | 'mcp' | 'feedback' | 'project';
 
@@ -268,6 +270,22 @@ const getMcpSelfTestLabel = (state: McpViewState): string => {
     default:
       return 'Waiting for first verification.';
   }
+};
+
+const getDockIconStatusLabel = (state: ChromeAppearanceState): string => {
+  if (state.dockIconStatus === 'failed') {
+    return state.dockIconSource === 'projectIcon'
+      ? 'Failed to apply project Dock icon'
+      : 'Failed to apply chrome-color Dock icon';
+  }
+
+  if (state.dockIconStatus === 'applied') {
+    return state.dockIconSource === 'projectIcon'
+      ? 'Applied project Dock icon'
+      : 'Applied chrome-color Dock icon';
+  }
+
+  return 'Dock icon not applied yet';
 };
 
 const getMcpAuthLabel = (state: McpViewState): string => {
@@ -1443,6 +1461,12 @@ const ProjectSurface = ({
     chromeColor: effectiveChromeColor,
     accentColor: effectiveAccentColor,
   });
+  const previewFallbackIconColor =
+    effectiveChromeColor === DEFAULT_CHROME_COLOR
+      ? DEFAULT_DOCK_ICON_COLOR
+      : previewTheme.previewIconFallbackBg;
+  const previewFallbackIconLabel =
+    effectiveChromeColor === DEFAULT_CHROME_COLOR ? 'Default black icon' : 'Chrome color icon';
   const draftProjectIconPreviewSrc = projectIconSrc(
     resolveDraftProjectIconPath(
       chromeAppearanceState.projectRoot,
@@ -1576,6 +1600,12 @@ const ProjectSurface = ({
                   <div className="projectSurface__metaLabel">Config file</div>
                   <div className="projectSurface__metaValue">{chromeAppearanceState.configPath}</div>
                 </div>
+                <div className="projectSurface__metaCard">
+                  <div className="projectSurface__metaLabel">Dock icon</div>
+                  <div className="projectSurface__metaValue">
+                    {getDockIconStatusLabel(chromeAppearanceState)}
+                  </div>
+                </div>
                 <div className="projectSurface__sectionMeta">
                   Relative icon paths resolve from this project folder.
                 </div>
@@ -1589,6 +1619,11 @@ const ProjectSurface = ({
             )}
             {chromeAppearanceState.lastError ? (
               <div className="projectSurface__error">{chromeAppearanceState.lastError}</div>
+            ) : null}
+            {!chromeAppearanceState.lastError && chromeAppearanceState.dockIconStatus === 'applied' ? (
+              <div className="projectSurface__sectionMeta">
+                {getDockIconStatusLabel(chromeAppearanceState)}
+              </div>
             ) : null}
           </section>
 
@@ -1768,12 +1803,13 @@ const ProjectSurface = ({
                     <div
                       className="projectSurface__previewIconFallback"
                       style={{
-                        backgroundColor: previewTheme.previewIconFallbackBg,
-                        color: previewTheme.previewIconFallbackFg,
+                        backgroundColor: previewFallbackIconColor,
+                        color:
+                          previewFallbackIconColor === DEFAULT_DOCK_ICON_COLOR
+                            ? '#FFFFFF'
+                            : previewTheme.previewIconFallbackFg,
                       }}
-                    >
-                      LB
-                    </div>
+                    />
                   )}
                 </div>
                 <div className="projectSurface__previewCopy">
@@ -1788,7 +1824,7 @@ const ProjectSurface = ({
                     style={{ color: previewTheme.chromeMuted }}
                   >
                     {hasProject
-                      ? projectIconPathDraft || 'No project icon configured'
+                      ? projectIconPathDraft || previewFallbackIconLabel
                       : 'Choose a project folder to enable config-backed styling'}
                   </div>
                 </div>

@@ -1,5 +1,6 @@
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { nativeImage, type NativeImage } from 'electron';
+import { DEFAULT_CHROME_COLOR } from '@agent-browser/protocol';
 
 export interface DockIconTemplateLocationOptions {
   appPath: string;
@@ -16,117 +17,89 @@ export const dockIconTemplatePath = ({
     ? path.join(resourcesPath, 'static', 'dock-icon-template.svg')
     : path.join(appPath, 'static', 'dock-icon-template.svg');
 
-const buildBaseSvg = (accentColor: string): Buffer =>
-  Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="${accentColor}" stop-opacity="0.96" />
-          <stop offset="100%" stop-color="#111827" stop-opacity="0.18" />
-        </linearGradient>
-      </defs>
-      <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#bg)" />
-    </svg>`,
-  );
+const ICON_SIZE = 512;
+const OUTER_INSET = 16;
+const OUTER_RADIUS = 116;
+const IMAGE_INSET = 76;
+const IMAGE_SIZE = 360;
+const IMAGE_RADIUS = 88;
+export const DEFAULT_DOCK_ICON_COLOR = '#000000';
+const BYTES_PER_PIXEL = 4;
 
-const buildMaskSvg = (): Buffer =>
-  Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="360" viewBox="0 0 360 360">
-      <rect x="0" y="0" width="360" height="360" rx="88" fill="#ffffff" />
-    </svg>`,
-  );
+const toDataUrl = (mimeType: string, buffer: Buffer): string =>
+  `data:${mimeType};base64,${buffer.toString('base64')}`;
 
-const buildDefaultGlyphSvg = (): Buffer =>
-  Buffer.from(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-      <rect x="116" y="116" width="280" height="280" rx="88" fill="rgba(255,255,255,0.94)" />
-      <path
-        d="M256 194c-34 0-62 28-62 62s28 62 62 62c20 0 37-8 48-22"
-        fill="none"
-        stroke="#111827"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        stroke-width="24"
-      />
-      <path
-        d="M256 318c34 0 62-28 62-62s-28-62-62-62c-20 0-37 8-48 22"
-        fill="none"
-        stroke="#111827"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        stroke-width="24"
-      />
-    </svg>`,
-  );
+const toSvgDataUrl = (svg: string): string =>
+  toDataUrl('image/svg+xml', Buffer.from(svg, 'utf8'));
 
-type SharpFactory = typeof import('sharp');
+const parseHexColor = (hexColor: string): { red: number; green: number; blue: number } => ({
+  red: Number.parseInt(hexColor.slice(1, 3), 16),
+  green: Number.parseInt(hexColor.slice(3, 5), 16),
+  blue: Number.parseInt(hexColor.slice(5, 7), 16),
+});
 
-let sharpPromise: Promise<SharpFactory> | null = null;
+export const resolveDefaultDockIconColor = (chromeColor: string): string =>
+  chromeColor === DEFAULT_CHROME_COLOR ? DEFAULT_DOCK_ICON_COLOR : chromeColor;
 
-const loadSharp = async (): Promise<SharpFactory> => {
-  if (sharpPromise === null) {
-    sharpPromise = import('sharp').then(
-      (module) =>
-        (module as unknown as { default?: SharpFactory }).default ??
-        (module as unknown as SharpFactory),
-    );
+const buildDockIconSvg = (chromeColor: string, projectImageDataUrl: string | null): string => `
+  <svg xmlns="http://www.w3.org/2000/svg" width="${ICON_SIZE}" height="${ICON_SIZE}" viewBox="0 0 ${ICON_SIZE} ${ICON_SIZE}">
+    <defs>
+      <clipPath id="project-mask">
+        <rect x="${IMAGE_INSET}" y="${IMAGE_INSET}" width="${IMAGE_SIZE}" height="${IMAGE_SIZE}" rx="${IMAGE_RADIUS}" />
+      </clipPath>
+    </defs>
+    <rect x="${OUTER_INSET}" y="${OUTER_INSET}" width="${ICON_SIZE - OUTER_INSET * 2}" height="${ICON_SIZE - OUTER_INSET * 2}" rx="${OUTER_RADIUS}" fill="${chromeColor}" />
+    ${
+      projectImageDataUrl
+        ? `<image href="${projectImageDataUrl}" x="${IMAGE_INSET}" y="${IMAGE_INSET}" width="${IMAGE_SIZE}" height="${IMAGE_SIZE}" preserveAspectRatio="xMidYMid slice" clip-path="url(#project-mask)" />`
+        : ''
+    }
+  </svg>
+`;
+
+const loadProjectIconImage = (projectIconPath: string): NativeImage => {
+  const projectIcon = nativeImage.createFromPath(projectIconPath);
+  if (projectIcon.isEmpty()) {
+    throw new Error(`Could not load project icon image: ${projectIconPath}`);
   }
 
-  return sharpPromise;
+  return projectIcon;
 };
+
+const readProjectImageDataUrl = async (projectIconPath: string): Promise<string> =>
+  loadProjectIconImage(projectIconPath)
+    .resize({
+      width: IMAGE_SIZE,
+      height: IMAGE_SIZE,
+      quality: 'best',
+    })
+    .toDataURL();
 
 export const composeProjectDockIcon = async (options: {
-  accentColor: string;
+  chromeColor: string;
   projectIconPath: string;
   templatePath: string;
-}): Promise<Buffer> => {
-  const sharp = await loadSharp();
-  const templateBuffer = await fs.readFile(options.templatePath);
-  const maskedProjectIcon = await sharp(options.projectIconPath)
-    .resize(360, 360, {
-      fit: 'cover',
-      position: 'centre',
-    })
-    .composite([
-      {
-        input: buildMaskSvg(),
-        blend: 'dest-in',
-      },
-    ])
-    .png()
-    .toBuffer();
-
-  return sharp(buildBaseSvg(options.accentColor))
-    .composite([
-      {
-        input: maskedProjectIcon,
-        left: 76,
-        top: 76,
-      },
-      {
-        input: templateBuffer,
-      },
-    ])
-    .png()
-    .toBuffer();
-};
+}): Promise<string> =>
+  toSvgDataUrl(
+    buildDockIconSvg(options.chromeColor, await readProjectImageDataUrl(options.projectIconPath)),
+  );
 
 export const composeDefaultDockIcon = async (options: {
-  accentColor: string;
+  chromeColor: string;
   templatePath: string;
-}): Promise<Buffer> => {
-  const sharp = await loadSharp();
-  const templateBuffer = await fs.readFile(options.templatePath);
+}): Promise<NativeImage> => {
+  void options.templatePath;
+  const { red, green, blue } = parseHexColor(resolveDefaultDockIconColor(options.chromeColor));
+  const bitmap = Buffer.alloc(ICON_SIZE * ICON_SIZE * BYTES_PER_PIXEL);
+  for (let index = 0; index < bitmap.length; index += BYTES_PER_PIXEL) {
+    bitmap[index] = blue;
+    bitmap[index + 1] = green;
+    bitmap[index + 2] = red;
+    bitmap[index + 3] = 0xff;
+  }
 
-  return sharp(buildBaseSvg(options.accentColor))
-    .composite([
-      {
-        input: buildDefaultGlyphSvg(),
-      },
-      {
-        input: templateBuffer,
-      },
-    ])
-    .png()
-    .toBuffer();
+  return nativeImage.createFromBitmap(bitmap, {
+    width: ICON_SIZE,
+    height: ICON_SIZE,
+  });
 };

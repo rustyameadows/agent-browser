@@ -78,6 +78,7 @@ import {
   composeDefaultDockIcon,
   composeProjectDockIcon,
   dockIconTemplatePath,
+  resolveDefaultDockIconColor,
 } from './project-dock-icon';
 import {
   PROJECT_SELECTION_FILE_NAME,
@@ -160,6 +161,8 @@ export class BrowserShell {
   private readonly projectDockTemplatePath: string;
   private readonly projectAppearanceUnsubscribe: () => void;
   private dockIconError: string | null = null;
+  private dockIconStatus: ChromeAppearanceState['dockIconStatus'] = 'idle';
+  private dockIconSource: ChromeAppearanceState['dockIconSource'] = 'chromeColor';
   private appliedDockIconKey: string | null = null;
 
   constructor(private readonly options: BrowserShellOptions = {}) {
@@ -175,15 +178,14 @@ export class BrowserShell {
         resourcesPath: process.resourcesPath,
       });
     this.chromeAppearanceState = {
-      ...this.projectAppearance.getState(),
+      ...this.mergeChromeAppearanceDiagnostics(this.projectAppearance.getState()),
       isOpen: false,
     };
     this.registerIpcHandlers();
     this.projectAppearanceUnsubscribe = this.projectAppearance.subscribe((state) => {
       this.chromeAppearanceState = {
-        ...state,
+        ...this.mergeChromeAppearanceDiagnostics(state),
         isOpen: this.chromeAppearanceState.isOpen,
-        lastError: this.composeChromeAppearanceError(state.lastError, this.dockIconError),
       };
       this.applyChromeAppearance();
       void this.syncDockIcon();
@@ -556,9 +558,8 @@ export class BrowserShell {
       case 'selectProject': {
         const nextState = await this.promptForProjectFolder();
         this.chromeAppearanceState = {
-          ...nextState,
+          ...this.mergeChromeAppearanceDiagnostics(nextState),
           isOpen: this.chromeAppearanceState.isOpen,
-          lastError: this.composeChromeAppearanceError(nextState.lastError, this.dockIconError),
         };
         this.applyChromeAppearance();
         void this.syncDockIcon();
@@ -572,9 +573,8 @@ export class BrowserShell {
           projectIconPath: command.projectIconPath,
         });
         this.chromeAppearanceState = {
-          ...nextState,
+          ...this.mergeChromeAppearanceDiagnostics(nextState),
           isOpen: this.chromeAppearanceState.isOpen,
-          lastError: this.composeChromeAppearanceError(nextState.lastError, this.dockIconError),
         };
         this.applyChromeAppearance();
         void this.syncDockIcon();
@@ -584,9 +584,8 @@ export class BrowserShell {
       case 'reset': {
         const nextState = await this.projectAppearance.resetAppearance();
         this.chromeAppearanceState = {
-          ...nextState,
+          ...this.mergeChromeAppearanceDiagnostics(nextState),
           isOpen: this.chromeAppearanceState.isOpen,
-          lastError: this.composeChromeAppearanceError(nextState.lastError, this.dockIconError),
         };
         this.applyChromeAppearance();
         void this.syncDockIcon();
@@ -1669,94 +1668,106 @@ export class BrowserShell {
     return stateError ?? runtimeError;
   }
 
+  private mergeChromeAppearanceDiagnostics(
+    state: ChromeAppearanceState,
+  ): ChromeAppearanceState {
+    return {
+      ...state,
+      dockIconStatus: this.dockIconStatus,
+      dockIconSource: this.dockIconSource,
+      dockIconLastError: this.dockIconError,
+      lastError: this.composeChromeAppearanceError(state.lastError, this.dockIconError),
+    };
+  }
+
   private async syncDockIcon(): Promise<void> {
     if (process.platform !== 'darwin' || !app.dock) {
       return;
     }
 
     const iconPath = this.chromeAppearanceState.resolvedProjectIconPath;
-    const defaultDockIconKey = `default:${this.chromeAppearanceState.accentColor}`;
+    const defaultDockIconKey = `default:${resolveDefaultDockIconColor(
+      this.chromeAppearanceState.chromeColor,
+    )}`;
     if (!iconPath) {
+      this.dockIconSource = 'chromeColor';
       if (this.appliedDockIconKey !== defaultDockIconKey) {
         try {
-          const buffer = await composeDefaultDockIcon({
-            accentColor: this.chromeAppearanceState.accentColor,
+          const icon = await composeDefaultDockIcon({
+            chromeColor: this.chromeAppearanceState.chromeColor,
             templatePath: this.projectDockTemplatePath,
           });
-          const icon = nativeImage.createFromBuffer(buffer);
-          if (!icon.isEmpty()) {
-            app.dock.setIcon(icon);
-            this.appliedDockIconKey = defaultDockIconKey;
+          if (icon.isEmpty()) {
+            throw new Error('Electron created an empty Dock icon from the chrome color icon.');
           }
+          app.dock.setIcon(icon);
+          this.appliedDockIconKey = defaultDockIconKey;
+          this.dockIconStatus = 'applied';
           this.dockIconError = null;
         } catch (error) {
           this.dockIconError =
             error instanceof Error
               ? `Could not compose Loop Browser dock icon: ${error.message}`
               : 'Could not compose Loop Browser dock icon.';
+          this.dockIconStatus = 'failed';
           this.appliedDockIconKey = null;
         }
       } else {
+        this.dockIconStatus = 'applied';
         this.dockIconError = null;
       }
 
-      this.chromeAppearanceState = {
-        ...this.chromeAppearanceState,
-        lastError: this.composeChromeAppearanceError(
-          this.projectAppearance.getState().lastError,
-          this.dockIconError,
-        ),
-      };
+      this.chromeAppearanceState = this.mergeChromeAppearanceDiagnostics(this.chromeAppearanceState);
       this.sendChromeAppearanceState();
       return;
     }
 
-    const dockIconKey = `${iconPath}:${this.chromeAppearanceState.accentColor}`;
+    this.dockIconSource = 'projectIcon';
+    const dockIconKey = `${iconPath}:${this.chromeAppearanceState.chromeColor}`;
     if (dockIconKey === this.appliedDockIconKey) {
+      this.dockIconStatus = 'applied';
+      this.dockIconError = null;
+      this.chromeAppearanceState = this.mergeChromeAppearanceDiagnostics(this.chromeAppearanceState);
+      this.sendChromeAppearanceState();
       return;
     }
 
     try {
-      const buffer = await composeProjectDockIcon({
-        accentColor: this.chromeAppearanceState.accentColor,
+      const dataUrl = await composeProjectDockIcon({
+        chromeColor: this.chromeAppearanceState.chromeColor,
         projectIconPath: iconPath,
         templatePath: this.projectDockTemplatePath,
       });
-      const icon = nativeImage.createFromBuffer(buffer);
-      if (!icon.isEmpty()) {
-        app.dock.setIcon(icon);
-        this.appliedDockIconKey = dockIconKey;
+      const icon = nativeImage.createFromDataURL(dataUrl);
+      if (icon.isEmpty()) {
+        throw new Error('Electron created an empty Dock icon from the composed project icon.');
       }
+      app.dock.setIcon(icon);
+      this.appliedDockIconKey = dockIconKey;
+      this.dockIconStatus = 'applied';
       this.dockIconError = null;
     } catch (error) {
       this.dockIconError =
         error instanceof Error
           ? `Could not compose project dock icon: ${error.message}`
           : 'Could not compose project dock icon.';
+      this.dockIconStatus = 'failed';
       try {
-        const fallbackBuffer = await composeDefaultDockIcon({
-          accentColor: this.chromeAppearanceState.accentColor,
+        const fallbackIcon = await composeDefaultDockIcon({
+          chromeColor: this.chromeAppearanceState.chromeColor,
           templatePath: this.projectDockTemplatePath,
         });
-        const fallbackIcon = nativeImage.createFromBuffer(fallbackBuffer);
-        if (!fallbackIcon.isEmpty()) {
-          app.dock.setIcon(fallbackIcon);
-          this.appliedDockIconKey = defaultDockIconKey;
-        } else {
-          this.appliedDockIconKey = null;
+        if (fallbackIcon.isEmpty()) {
+          throw new Error('Electron created an empty fallback Dock icon from the chrome color icon.');
         }
+        app.dock.setIcon(fallbackIcon);
+        this.appliedDockIconKey = defaultDockIconKey;
       } catch {
         this.appliedDockIconKey = null;
       }
     }
 
-    this.chromeAppearanceState = {
-      ...this.chromeAppearanceState,
-      lastError: this.composeChromeAppearanceError(
-        this.projectAppearance.getState().lastError,
-        this.dockIconError,
-      ),
-    };
+    this.chromeAppearanceState = this.mergeChromeAppearanceDiagnostics(this.chromeAppearanceState);
     this.sendChromeAppearanceState();
   }
 

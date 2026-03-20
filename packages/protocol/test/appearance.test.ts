@@ -36,6 +36,8 @@ describe('isChromeAppearanceState', () => {
         configPath: '/tmp/project/.loop-browser.json',
         chromeColor: '#AABBCC',
         accentColor: '#112233',
+        dockIconStatus: 'applied',
+        dockIconSource: 'projectIcon',
       }),
     ).toBe(true);
   });

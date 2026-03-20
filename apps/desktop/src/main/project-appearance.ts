@@ -109,6 +109,9 @@ export const createProjectAppearanceState = (projectRoot: string | null): Chrome
   accentColor: DEFAULT_ACCENT_COLOR,
   projectIconPath: '',
   resolvedProjectIconPath: null,
+  dockIconStatus: 'idle',
+  dockIconSource: 'chromeColor',
+  dockIconLastError: null,
   lastError: null,
 });
 

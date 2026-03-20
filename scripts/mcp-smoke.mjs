@@ -501,6 +501,18 @@ const run = async () => {
       projectFixture.projectIconPath,
       'chrome.getAppearance did not resolve the project icon path relative to the smoke project.',
     )
+    assert(
+      initialAppearanceState?.dockIconStatus === 'applied',
+      'chrome.getAppearance did not report an applied Dock icon state.',
+    )
+    assert(
+      initialAppearanceState?.dockIconSource === 'projectIcon',
+      'chrome.getAppearance did not report the expected Dock icon source.',
+    )
+    assert(
+      initialAppearanceState?.dockIconLastError === null,
+      'chrome.getAppearance reported a Dock icon error during initial load.',
+    )
 
     const updatedAppearance = await makeRpcRequest(
       registration,
@@ -523,6 +535,14 @@ const run = async () => {
     assert(
       updatedAppearanceState?.accentColor === UPDATED_ACCENT_COLOR,
       'chrome.setAppearance did not apply the requested accent color.',
+    )
+    assert(
+      updatedAppearanceState?.dockIconStatus === 'applied',
+      'chrome.setAppearance did not report an applied Dock icon state.',
+    )
+    assert(
+      updatedAppearanceState?.dockIconLastError === null,
+      'chrome.setAppearance reported a Dock icon error.',
     )
     const persistedAppearance = JSON.parse(await readFile(projectFixture.configPath, 'utf8'))
     assert(

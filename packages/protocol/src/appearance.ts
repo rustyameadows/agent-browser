@@ -5,10 +5,14 @@ export const CHROME_APPEARANCE_BROWSE_ICON_CHANNEL = 'chrome-appearance:browse-i
 
 export const DEFAULT_CHROME_COLOR = '#FAFBFD';
 export const DEFAULT_ACCENT_COLOR = '#0A84FF';
+export const chromeDockIconStatuses = ['idle', 'applied', 'failed'] as const;
+export const chromeDockIconSources = ['chromeColor', 'projectIcon'] as const;
 
 export const chromeAppearanceActions = ['open', 'close', 'set', 'reset', 'selectProject'] as const;
 
 export type ChromeAppearanceAction = (typeof chromeAppearanceActions)[number];
+export type ChromeDockIconStatus = (typeof chromeDockIconStatuses)[number];
+export type ChromeDockIconSource = (typeof chromeDockIconSources)[number];
 
 export interface ChromeAppearanceState {
   isOpen: boolean;
@@ -18,6 +22,9 @@ export interface ChromeAppearanceState {
   accentColor: string;
   projectIconPath: string;
   resolvedProjectIconPath: string | null;
+  dockIconStatus: ChromeDockIconStatus;
+  dockIconSource: ChromeDockIconSource;
+  dockIconLastError: string | null;
   lastError: string | null;
 }
 
@@ -46,6 +53,9 @@ export const createEmptyChromeAppearanceState = (): ChromeAppearanceState => ({
   accentColor: DEFAULT_ACCENT_COLOR,
   projectIconPath: '',
   resolvedProjectIconPath: null,
+  dockIconStatus: 'idle',
+  dockIconSource: 'chromeColor',
+  dockIconLastError: null,
   lastError: null,
 });
 
@@ -63,6 +73,11 @@ export const isChromeAppearanceState = (value: unknown): value is ChromeAppearan
     typeof value.projectIconPath === 'string' &&
     (typeof value.resolvedProjectIconPath === 'string' ||
       value.resolvedProjectIconPath === null) &&
+    typeof value.dockIconStatus === 'string' &&
+    chromeDockIconStatuses.includes(value.dockIconStatus as ChromeDockIconStatus) &&
+    typeof value.dockIconSource === 'string' &&
+    chromeDockIconSources.includes(value.dockIconSource as ChromeDockIconSource) &&
+    (typeof value.dockIconLastError === 'string' || value.dockIconLastError === null) &&
     (typeof value.lastError === 'string' || value.lastError === null)
   );
 };

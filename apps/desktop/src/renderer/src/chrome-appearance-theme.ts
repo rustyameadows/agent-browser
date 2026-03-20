@@ -146,8 +146,8 @@ export const getChromeAppearanceThemeTokens = (
     previewBarMuted: createMutedTone(previewBarFg, previewBarBg, 0.42),
     previewPillBg: createMutedTone(previewBarFg, previewBarBg, 0.84),
     previewIconWrapBg: mixColors(state.chromeColor, '#FFFFFF', 0.72),
-    previewIconFallbackBg: state.accentColor,
-    previewIconFallbackFg: accentStrongFg,
+    previewIconFallbackBg: state.chromeColor,
+    previewIconFallbackFg: pickReadableForeground(state.chromeColor),
   };
 };
 
