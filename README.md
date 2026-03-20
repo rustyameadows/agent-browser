@@ -49,6 +49,19 @@ The current MCP tool set includes:
 - `artifacts.list`
 - `artifacts.delete`
 
+The server also exposes a read-only MCP resource catalog for Codex-style discovery:
+
+- `loop-browser:///sessions`
+- `loop-browser:///session/{sessionId}/summary`
+- `loop-browser:///session/{sessionId}/tabs`
+- `loop-browser:///session/{sessionId}/window`
+- `loop-browser:///session/{sessionId}/picker/selection`
+- `loop-browser:///session/{sessionId}/feedback`
+- `loop-browser:///session/{sessionId}/page/markdown`
+- `loop-browser:///session/{sessionId}/artifacts`
+
+Phase 1 of the resource surface is intentionally read-only. It does not expose prompts, SSE streams, subscriptions, or list-changed notifications yet.
+
 Screenshot results are artifact-backed. The tool server stores them under the app data directory and returns metadata plus an `artifactId`, which you can resolve later through `artifacts.get`.
 
 ## Project Notes

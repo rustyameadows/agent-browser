@@ -66,6 +66,17 @@ describe('ToolServer', () => {
       },
     };
     let feedbackState = createEmptyFeedbackState();
+    const sessionSummary = {
+      sessionId: 'project-session-1',
+      projectRoot: '/tmp/project',
+      projectName: 'project',
+      chromeColor: '#FAFBFD',
+      projectIconPath: '',
+      isFocused: true,
+      isHome: false,
+      dockIconStatus: 'idle' as const,
+      status: 'ready' as const,
+    };
 
     const server = new ToolServer({
       runtime: {
@@ -257,6 +268,8 @@ describe('ToolServer', () => {
             fileNameHint: request.fileNameHint ?? request.selector ?? request.target,
           };
         },
+        listSessions: () => [sessionSummary],
+        getCurrentSession: () => sessionSummary,
       },
       storageDir,
       port: 0,
@@ -285,35 +298,59 @@ describe('ToolServer', () => {
     });
     expect(unauthorized.status).toBe(401);
 
+    const sseProbe = await fetch(connection.url, {
+      method: 'GET',
+    });
+    expect(sseProbe.status).toBe(405);
+
     const initializeResponse = await fetch(connection.url, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${connection.token}`,
+        accept: 'application/json, text/event-stream',
         'content-type': 'application/json',
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
         method: 'initialize',
+        params: {
+          protocolVersion: '2025-11-25',
+          capabilities: {},
+          clientInfo: {
+            name: 'tool-server-test',
+            version: '1.0.0',
+          },
+        },
       }),
     });
 
     const initializePayload = (await initializeResponse.json()) as {
       result: {
+        protocolVersion: string;
         serverInfo: {
           name: string;
+        };
+        capabilities: {
+          resources: Record<string, never>;
         };
       };
     };
     expect(initializeResponse.status).toBe(200);
     expect(initializePayload.result.serverInfo.name).toBe('agent-browser');
+    expect(initializePayload.result.protocolVersion).toBe('2025-11-25');
+    expect(initializePayload.result.capabilities.resources).toEqual({});
+    const negotiatedProtocolVersion = initializePayload.result.protocolVersion;
+    const mcpHeaders = {
+      authorization: `Bearer ${connection.token}`,
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+      'mcp-protocol-version': negotiatedProtocolVersion,
+    };
 
     const toolsResponse = await fetch(connection.url, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${connection.token}`,
-        'content-type': 'application/json',
-      },
+      headers: mcpHeaders,
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 2,
@@ -333,6 +370,157 @@ describe('ToolServer', () => {
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.viewAsMarkdown');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('page.screenshot');
     expect(toolsPayload.result.tools.map((tool) => tool.name)).toContain('artifacts.get');
+
+    const resourcesListResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'resources-list',
+        method: 'resources/list',
+      }),
+    });
+    expect(resourcesListResponse.status).toBe(200);
+    const resourcesListPayload = (await resourcesListResponse.json()) as {
+      result: {
+        resources: Array<{ uri: string }>;
+      };
+    };
+    expect(resourcesListPayload.result.resources.map((resource) => resource.uri)).toContain(
+      'loop-browser:///sessions',
+    );
+    expect(resourcesListPayload.result.resources.map((resource) => resource.uri)).toContain(
+      `loop-browser:///session/${sessionSummary.sessionId}/summary`,
+    );
+
+    const resourceTemplatesResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'resource-templates-list',
+        method: 'resources/templates/list',
+      }),
+    });
+    expect(resourceTemplatesResponse.status).toBe(200);
+    const resourceTemplatesPayload = (await resourceTemplatesResponse.json()) as {
+      result: {
+        resourceTemplates: Array<{ uriTemplate: string }>;
+      };
+    };
+    expect(
+      resourceTemplatesPayload.result.resourceTemplates.map(
+        (resourceTemplate) => resourceTemplate.uriTemplate,
+      ),
+    ).toContain('loop-browser:///session/{sessionId}/summary');
+
+    const sessionsResourceResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'sessions-resource',
+        method: 'resources/read',
+        params: {
+          uri: 'loop-browser:///sessions',
+        },
+      }),
+    });
+    expect(sessionsResourceResponse.status).toBe(200);
+    const sessionsResourcePayload = (await sessionsResourceResponse.json()) as {
+      result: {
+        contents: Array<{ text: string }>;
+      };
+    };
+    expect(
+      JSON.parse(sessionsResourcePayload.result.contents[0]?.text ?? '{}').sessions[0]?.sessionId,
+    ).toBe(sessionSummary.sessionId);
+
+    const summaryResourceResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'summary-resource',
+        method: 'resources/read',
+        params: {
+          uri: `loop-browser:///session/${sessionSummary.sessionId}/summary`,
+        },
+      }),
+    });
+    expect(summaryResourceResponse.status).toBe(200);
+    const summaryResourcePayload = (await summaryResourceResponse.json()) as {
+      result: {
+        contents: Array<{ text: string }>;
+      };
+    };
+    expect(
+      JSON.parse(summaryResourcePayload.result.contents[0]?.text ?? '{}').session?.sessionId,
+    ).toBe(sessionSummary.sessionId);
+
+    const tabsResourceResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'tabs-resource',
+        method: 'resources/read',
+        params: {
+          uri: `loop-browser:///session/${sessionSummary.sessionId}/tabs`,
+        },
+      }),
+    });
+    expect(tabsResourceResponse.status).toBe(200);
+    const tabsResourcePayload = (await tabsResourceResponse.json()) as {
+      result: {
+        contents: Array<{ text: string }>;
+      };
+    };
+    expect(JSON.parse(tabsResourcePayload.result.contents[0]?.text ?? '{}').tabs[0]?.url).toBe(
+      'https://example.com',
+    );
+
+    const markdownResourceResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'markdown-resource',
+        method: 'resources/read',
+        params: {
+          uri: `loop-browser:///session/${sessionSummary.sessionId}/page/markdown`,
+        },
+      }),
+    });
+    expect(markdownResourceResponse.status).toBe(200);
+    const markdownResourcePayload = (await markdownResourceResponse.json()) as {
+      result: {
+        contents: Array<{ text: string }>;
+      };
+    };
+    expect(JSON.parse(markdownResourcePayload.result.contents[0]?.text ?? '{}').title).toBe(
+      'Example Domain',
+    );
+
+    const missingResourceResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'missing-resource',
+        method: 'resources/read',
+        params: {
+          uri: 'loop-browser:///session/missing/summary',
+        },
+      }),
+    });
+    expect(missingResourceResponse.status).toBe(404);
+    const missingResourcePayload = (await missingResourceResponse.json()) as {
+      error: {
+        code: number;
+      };
+    };
+    expect(missingResourcePayload.error.code).toBe(-32002);
 
     const feedbackCreateResponse = await fetch(connection.url, {
       method: 'POST',
@@ -919,6 +1107,9 @@ describe('ToolServer', () => {
     expect(selfTestDiagnostics.lastSelfTest.healthOk).toBe(true);
     expect(selfTestDiagnostics.lastSelfTest.initializeOk).toBe(true);
     expect(selfTestDiagnostics.lastSelfTest.toolsListOk).toBe(true);
+    expect(selfTestDiagnostics.lastSelfTest.resourcesListOk).toBe(true);
+    expect(selfTestDiagnostics.lastSelfTest.resourceTemplatesListOk).toBe(true);
+    expect(selfTestDiagnostics.lastSelfTest.resourceReadOk).toBe(true);
 
     await server.stop();
   });
@@ -996,6 +1187,10 @@ describe('ToolServer', () => {
       toolName: string;
       args: Record<string, unknown>;
     }> = [];
+    const proxiedResourceReads: Array<{
+      sessionId: string;
+      uri: string;
+    }> = [];
 
     const server = new ToolServer({
       runtime: {
@@ -1045,6 +1240,18 @@ describe('ToolServer', () => {
               sessionId,
               toolName,
             },
+          };
+        },
+        proxyResourceRead: async (sessionId, uri) => {
+          proxiedResourceReads.push({ sessionId, uri });
+          return {
+            contents: [
+              {
+                uri,
+                mimeType: 'application/json',
+                text: `${JSON.stringify({ proxied: true, sessionId, uri }, null, 2)}\n`,
+              },
+            ],
           };
         },
       },
@@ -1171,6 +1378,31 @@ describe('ToolServer', () => {
           sessionId: sessionSummary.sessionId,
           target: 'https://example.com',
         },
+      },
+    ]);
+
+    const proxiedResourceResponse = await fetch(connection.url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'mcp-protocol-version': '2025-11-25',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'proxied-resource-read',
+        method: 'resources/read',
+        params: {
+          uri: `loop-browser:///session/${sessionSummary.sessionId}/summary`,
+        },
+      }),
+    });
+    expect(proxiedResourceResponse.status).toBe(200);
+    expect(proxiedResourceReads).toEqual([
+      {
+        sessionId: sessionSummary.sessionId,
+        uri: `loop-browser:///session/${sessionSummary.sessionId}/summary`,
       },
     ]);
 

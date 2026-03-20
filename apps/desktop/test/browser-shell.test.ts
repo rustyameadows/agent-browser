@@ -196,6 +196,10 @@ describe('BrowserShell', () => {
     shell.attachMcpDiagnostics({
       getDiagnostics: () => ({
         lifecycle: 'listening',
+        setupLabel: 'This window',
+        setupUrl: 'http://127.0.0.1:46255/mcp',
+        setupToken: '25b79a64f932e91b0a7b8ae13002eb0593a5dbfcf5ed16f3',
+        setupRegistrationFile: '/tmp/mcp-registration.json',
         url: 'http://127.0.0.1:46255/mcp',
         host: '127.0.0.1',
         port: 46255,
@@ -224,10 +228,14 @@ describe('BrowserShell', () => {
         lastSelfTest: {
           status: 'passed',
           checkedAt: '2026-03-13T21:09:00.000Z',
-          summary: 'Health, initialize, and tools/list succeeded.',
+          summary:
+            'Health, initialize, tools/list, resources/list, resources/templates/list, and resources/read succeeded.',
           healthOk: true,
           initializeOk: true,
           toolsListOk: true,
+          resourcesListOk: true,
+          resourceTemplatesListOk: true,
+          resourceReadOk: true,
         },
         lastError: null,
         lastUpdatedAt: '2026-03-13T21:10:00.000Z',
@@ -238,6 +246,10 @@ describe('BrowserShell', () => {
       },
       runSelfTest: async () => ({
         lifecycle: 'listening',
+        setupLabel: 'This window',
+        setupUrl: 'http://127.0.0.1:46255/mcp',
+        setupToken: '25b79a64',
+        setupRegistrationFile: '/tmp/mcp-registration.json',
         url: 'http://127.0.0.1:46255/mcp',
         host: '127.0.0.1',
         port: 46255,
@@ -258,6 +270,9 @@ describe('BrowserShell', () => {
           healthOk: true,
           initializeOk: true,
           toolsListOk: true,
+          resourcesListOk: true,
+          resourceTemplatesListOk: true,
+          resourceReadOk: true,
         },
         lastError: null,
         lastUpdatedAt: '2026-03-13T21:10:00.000Z',
@@ -266,6 +281,8 @@ describe('BrowserShell', () => {
 
     const state = shell.getMcpViewState();
     expect(state.indicator).toBe('green');
+    expect(state.setupTransportUrl).toBe('http://127.0.0.1:46255/mcp');
+    expect(state.authToken).toBe('25b79a64f932e91b0a7b8ae13002eb0593a5dbfcf5ed16f3');
     expect(state.authTokenPreview).toBe('25b7...16f3');
     expect(state.tools).toContain('page.navigate');
     expect(state.agentActivity?.phase).toBe('in_progress');

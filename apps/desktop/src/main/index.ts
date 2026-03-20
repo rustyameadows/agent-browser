@@ -1,6 +1,7 @@
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { app } from 'electron';
-import { createEmptyChromeAppearanceState } from '@agent-browser/protocol';
+import { createEmptyChromeAppearanceState, type SessionSummary } from '@agent-browser/protocol';
 import { BrowserShell } from './browser-shell';
 import { installAppMenu } from './menu';
 import {
@@ -18,7 +19,11 @@ import {
   SessionDirectoryController,
 } from './session-manager';
 import { SessionBrokerRuntime } from './session-broker-runtime';
-import { ToolServer, type ToolServerConnectionInfo } from './tool-server';
+import {
+  ToolServer,
+  type ToolServerConnectionInfo,
+  type ToolServerRuntime,
+} from './tool-server';
 
 app.setName('Loop Browser');
 
@@ -29,6 +34,39 @@ if (process.env.LOOP_BROWSER_USE_MOCK_KEYCHAIN === '1') {
 const runtimeConfig = resolveRuntimeConfig(process.env);
 const clusterDir =
   process.env[LOOP_BROWSER_CLUSTER_DIR_ENV] || deriveClusterDir(app.getPath('appData'));
+
+const loadRegistrationConnectionInfo = (
+  registrationFile: string,
+): ToolServerConnectionInfo | null => {
+  try {
+    const payload = JSON.parse(readFileSync(registrationFile, 'utf8')) as {
+      transport?: {
+        url?: unknown;
+        headers?: {
+          Authorization?: unknown;
+        };
+      };
+    };
+    const url = payload.transport?.url;
+    const authorization = payload.transport?.headers?.Authorization;
+    if (typeof url !== 'string' || typeof authorization !== 'string') {
+      return null;
+    }
+
+    const match = authorization.match(/^Bearer\s+(.+)$/);
+    if (!match || match[1].trim().length === 0) {
+      return null;
+    }
+
+    return {
+      url,
+      token: match[1].trim(),
+      registrationFile,
+    };
+  } catch {
+    return null;
+  }
+};
 
 if (runtimeConfig.role === 'project-session' && runtimeConfig.userDataDir) {
   app.setPath('userData', runtimeConfig.userDataDir);
@@ -86,6 +124,8 @@ const createProjectSessionBootstrap = (): {
     path.join(app.getPath('userData'), PROJECT_SELECTION_FILE_NAME),
     runtimeConfig.projectRoot,
   );
+  const launcherRegistrationFile = path.join(clusterDir, 'mcp-registration.json');
+  const launcherConnectionInfo = loadRegistrationConnectionInfo(launcherRegistrationFile);
   const sessionController = new SessionDirectoryController({
     role: 'project-session',
     clusterDir,
@@ -97,14 +137,51 @@ const createProjectSessionBootstrap = (): {
     sessionRuntime: sessionController,
     role: 'project-session',
   });
+  const buildLocalSessionSummary = (): SessionSummary => {
+    const advertisedSummary = sessionController.getSessionRecord(sessionId)?.summary;
+    if (advertisedSummary) {
+      return advertisedSummary;
+    }
+
+    const appearance = browserShell.getChromeAppearanceState();
+    return {
+      sessionId,
+      projectRoot: runtimeConfig.projectRoot!,
+      projectName: path.basename(runtimeConfig.projectRoot!) || 'Project',
+      chromeColor: appearance.chromeColor,
+      projectIconPath: appearance.projectIconPath,
+      isFocused: browserShell.isWindowFocused(),
+      isHome: false,
+      dockIconStatus: appearance.dockIconStatus,
+      status: 'ready',
+    };
+  };
+  const projectSessionRuntime: ToolServerRuntime = {
+    listTabs: () => browserShell.listTabs(),
+    executeNavigationCommand: (command) => browserShell.executeNavigationCommand(command),
+    executePickerCommand: (command) => browserShell.executePickerCommand(command),
+    getPickerState: () => browserShell.getPickerState(),
+    executeChromeAppearanceCommand: (command) => browserShell.executeChromeAppearanceCommand(command),
+    getChromeAppearanceState: () => browserShell.getChromeAppearanceState(),
+    executeFeedbackCommand: (command) => browserShell.executeFeedbackCommand(command),
+    getFeedbackState: () => browserShell.getFeedbackState(),
+    getMarkdownForCurrentPage: (forceRefresh) => browserShell.getMarkdownForCurrentPage(forceRefresh),
+    getWindowState: () => browserShell.getWindowState(),
+    resizeWindow: (request) => browserShell.resizeWindow(request),
+    captureScreenshot: (request) => browserShell.captureScreenshot(request),
+    listSessions: async () => [buildLocalSessionSummary()],
+    getCurrentSession: async () => buildLocalSessionSummary(),
+  };
   const toolServer = new ToolServer({
-    runtime: browserShell,
+    runtime: projectSessionRuntime,
     storageDir: app.getPath('userData'),
     port: runtimeConfig.toolServerPort,
     internalControl: {
       focusWindow: () => browserShell.focusWindow(),
       closeWindow: () => browserShell.closeWindow(),
     },
+    setupConnectionInfo: launcherConnectionInfo,
+    setupConnectionLabel: launcherConnectionInfo ? 'Launcher broker' : 'This window',
   });
   let advertiser: ProjectSessionAdvertiser | null = null;
 

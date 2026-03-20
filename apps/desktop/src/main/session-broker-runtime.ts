@@ -31,7 +31,9 @@ const fetchSessionJson = async (
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,
+      accept: 'application/json, text/event-stream',
       'content-type': 'application/json',
+      'mcp-protocol-version': '2025-11-25',
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -75,6 +77,11 @@ export class SessionBrokerRuntime implements ToolServerRuntime {
         Object.entries(args).filter(([key]) => key !== 'sessionId'),
       ),
     });
+  }
+
+  async proxyResourceRead(sessionId: string, uri: string): Promise<unknown> {
+    const connection = this.getSessionConnection(sessionId);
+    return fetchSessionJson(connection.url, connection.token, 'resources/read', { uri });
   }
 
   async listSessions(): Promise<SessionSummary[]> {

@@ -52,8 +52,21 @@ type JsonRpcResponse =
       error: {
         code: number;
         message: string;
+        data?: unknown;
       };
     };
+
+class ToolServerRpcError extends Error {
+  constructor(
+    readonly statusCode: number,
+    readonly code: number,
+    message: string,
+    readonly data?: unknown,
+  ) {
+    super(message);
+    this.name = 'ToolServerRpcError';
+  }
+}
 
 export interface ToolTabSnapshot {
   tabId: string;
@@ -90,6 +103,7 @@ export interface ToolServerRuntime {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<unknown>;
+  proxyResourceRead?(sessionId: string, uri: string): Promise<unknown>;
 }
 
 type ToolServerInternalControl = {
@@ -105,6 +119,10 @@ export interface ToolServerConnectionInfo {
 
 export interface ToolServerDiagnosticsSnapshot {
   lifecycle: 'starting' | 'listening' | 'stopped' | 'error';
+  setupLabel: string;
+  setupUrl: string | null;
+  setupToken: string | null;
+  setupRegistrationFile: string | null;
   url: string | null;
   host: string;
   port: number | null;
@@ -129,10 +147,117 @@ type ToolDefinition = {
   inputSchema: Record<string, unknown>;
 };
 
+type ResourceDefinition = {
+  uri: string;
+  name: string;
+  title: string;
+  description: string;
+  mimeType: 'application/json';
+};
+
+type ResourceTemplateDefinition = {
+  uriTemplate: string;
+  name: string;
+  title: string;
+  description: string;
+  mimeType: 'application/json';
+};
+
+type SupportedProtocolVersion = '2025-03-26' | '2025-06-18' | '2025-11-25';
+
+type SessionResourceKind =
+  | 'summary'
+  | 'tabs'
+  | 'window'
+  | 'pickerSelection'
+  | 'feedback'
+  | 'pageMarkdown'
+  | 'artifacts';
+
+type ParsedResourceUri =
+  | {
+      kind: 'sessions';
+      uri: string;
+    }
+  | {
+      kind: 'session';
+      uri: string;
+      sessionId: string;
+      resourceKind: SessionResourceKind;
+    };
+
 const SERVER_NAME = 'agent-browser';
 const SERVER_VERSION = '0.1.0';
 const RECENT_REQUEST_LIMIT = 10;
 const DEFAULT_BUSY_HOLD_MS = 900;
+const SUPPORTED_PROTOCOL_VERSIONS: SupportedProtocolVersion[] = [
+  '2025-03-26',
+  '2025-06-18',
+  '2025-11-25',
+];
+const DEFAULT_PROTOCOL_VERSION: SupportedProtocolVersion = '2025-03-26';
+const MCP_PROTOCOL_VERSION_HEADER = 'mcp-protocol-version';
+const MCP_JSON_ACCEPT_HEADER = 'application/json, text/event-stream';
+const GLOBAL_SESSIONS_RESOURCE_URI = 'loop-browser:///sessions';
+const RESOURCE_NOT_FOUND_ERROR_CODE = -32002;
+
+const SESSION_RESOURCE_CATALOG: Array<{
+  resourceKind: SessionResourceKind;
+  pathSegments: string[];
+  name: string;
+  title: string;
+  description: string;
+}> = [
+  {
+    resourceKind: 'summary',
+    pathSegments: ['summary'],
+    name: 'session-summary',
+    title: 'Session Summary',
+    description: 'Project session metadata for a Loop Browser window.',
+  },
+  {
+    resourceKind: 'tabs',
+    pathSegments: ['tabs'],
+    name: 'session-tabs',
+    title: 'Session Tabs',
+    description: 'Current tab snapshots for a Loop Browser project session.',
+  },
+  {
+    resourceKind: 'window',
+    pathSegments: ['window'],
+    name: 'session-window',
+    title: 'Session Window',
+    description: 'Window and viewport bounds for a Loop Browser project session.',
+  },
+  {
+    resourceKind: 'pickerSelection',
+    pathSegments: ['picker', 'selection'],
+    name: 'session-picker-selection',
+    title: 'Picker Selection',
+    description: 'Latest DOM picker selection captured in a Loop Browser project session.',
+  },
+  {
+    resourceKind: 'feedback',
+    pathSegments: ['feedback'],
+    name: 'session-feedback',
+    title: 'Feedback State',
+    description: 'Feedback annotations and draft state for a Loop Browser project session.',
+  },
+  {
+    resourceKind: 'pageMarkdown',
+    pathSegments: ['page', 'markdown'],
+    name: 'session-page-markdown',
+    title: 'Page Markdown',
+    description: 'Markdown export for the active page in a Loop Browser project session.',
+  },
+  {
+    resourceKind: 'artifacts',
+    pathSegments: ['artifacts'],
+    name: 'session-artifacts',
+    title: 'Session Artifacts',
+    description: 'Saved screenshot artifact metadata for a Loop Browser project session.',
+  },
+];
 
 const PROGRESS_STATUS_BY_PHASE: Record<McpAgentActivityPhase, FeedbackStatus> = {
   acknowledged: 'acknowledged',
@@ -548,6 +673,9 @@ const EMPTY_SELF_TEST: McpSelfTestSummary = {
   healthOk: null,
   initializeOk: null,
   toolsListOk: null,
+  resourcesListOk: null,
+  resourceTemplatesListOk: null,
+  resourceReadOk: null,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -563,8 +691,16 @@ const toolResult = (value: unknown) => ({
   structuredContent: value,
 });
 
-const jsonResponse = (response: ServerResponse, statusCode: number, body: JsonRpcResponse): void => {
-  response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
+const jsonResponse = (
+  response: ServerResponse,
+  statusCode: number,
+  body: JsonRpcResponse,
+  headers?: Record<string, string>,
+): void => {
+  response.writeHead(statusCode, {
+    'content-type': 'application/json; charset=utf-8',
+    ...headers,
+  });
   response.end(JSON.stringify(body));
 };
 
@@ -574,6 +710,8 @@ const jsonError = (
   id: JsonRpcId,
   code: number,
   message: string,
+  data?: unknown,
+  headers?: Record<string, string>,
 ): void => {
   jsonResponse(response, statusCode, {
     jsonrpc: '2.0',
@@ -581,8 +719,9 @@ const jsonError = (
     error: {
       code,
       message,
+      ...(data === undefined ? {} : { data }),
     },
-  });
+  }, headers);
 };
 
 const readBody = async (request: IncomingMessage): Promise<string> => {
@@ -603,9 +742,114 @@ const describeRequest = (method: string, params: unknown): { method: string; det
     };
   }
 
+  if (method === 'resources/read' && isRecord(params) && typeof params.uri === 'string') {
+    return {
+      method,
+      detail: params.uri,
+    };
+  }
+
   return {
     method,
     detail: method,
+  };
+};
+
+const isSupportedProtocolVersion = (value: string): value is SupportedProtocolVersion =>
+  SUPPORTED_PROTOCOL_VERSIONS.includes(value as SupportedProtocolVersion);
+
+const getHeaderValue = (value: string | string[] | undefined): string | undefined => {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+
+  return value;
+};
+
+const buildJsonResourceResult = (uri: string, value: unknown) => ({
+  contents: [
+    {
+      uri,
+      mimeType: 'application/json',
+      text: `${JSON.stringify(value, null, 2)}\n`,
+    },
+  ],
+});
+
+const buildSessionResourceUri = (
+  sessionId: string,
+  pathSegments: string[],
+): string => `loop-browser:///session/${encodeURIComponent(sessionId)}/${pathSegments.join('/')}`;
+
+const buildResourceDefinitions = (sessions: SessionSummary[]): ResourceDefinition[] => [
+  {
+    uri: GLOBAL_SESSIONS_RESOURCE_URI,
+    name: 'sessions',
+    title: 'Loop Browser Sessions',
+    description: 'Open Loop Browser project sessions that can be inspected through MCP resources.',
+    mimeType: 'application/json',
+  },
+  ...sessions.flatMap((session) =>
+    SESSION_RESOURCE_CATALOG.map((resource) => ({
+      uri: buildSessionResourceUri(session.sessionId, resource.pathSegments),
+      name: `${session.sessionId}-${resource.name}`,
+      title: `${session.projectName}: ${resource.title}`,
+      description: resource.description,
+      mimeType: 'application/json' as const,
+    })),
+  ),
+];
+
+const RESOURCE_TEMPLATES: ResourceTemplateDefinition[] = SESSION_RESOURCE_CATALOG.map((resource) => ({
+  uriTemplate: `loop-browser:///session/{sessionId}/${resource.pathSegments.join('/')}`,
+  name: resource.name,
+  title: resource.title,
+  description: resource.description,
+  mimeType: 'application/json',
+}));
+
+const parseResourceUri = (uri: string): ParsedResourceUri | null => {
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(uri);
+  } catch {
+    return null;
+  }
+
+  if (parsedUrl.protocol !== 'loop-browser:') {
+    return null;
+  }
+
+  const segments = parsedUrl.pathname.split('/').filter((segment) => segment.length > 0);
+  if (segments.length === 1 && segments[0] === 'sessions') {
+    return {
+      kind: 'sessions',
+      uri,
+    };
+  }
+
+  if (segments.length < 3 || segments[0] !== 'session') {
+    return null;
+  }
+
+  const sessionId = decodeURIComponent(segments[1]);
+  const pathSuffix = segments.slice(2);
+  const match = SESSION_RESOURCE_CATALOG.find(
+    (resource) =>
+      resource.pathSegments.length === pathSuffix.length &&
+      resource.pathSegments.every((segment, index) => segment === pathSuffix[index]),
+  );
+
+  if (!match || sessionId.trim().length === 0) {
+    return null;
+  }
+
+  return {
+    kind: 'session',
+    uri,
+    sessionId,
+    resourceKind: match.resourceKind,
   };
 };
 
@@ -630,6 +874,8 @@ export class ToolServer {
   private readonly requireSessionId: boolean;
   private readonly toolDefinitions: ToolDefinition[];
   private readonly internalControl: ToolServerInternalControl | null;
+  private readonly setupConnectionInfo: ToolServerConnectionInfo | null;
+  private readonly setupConnectionLabel: string;
   private readonly diagnosticsListeners = new Set<
     (snapshot: ToolServerDiagnosticsSnapshot) => void
   >();
@@ -648,6 +894,8 @@ export class ToolServer {
     requireSessionId?: boolean;
     includeSessionTools?: boolean;
     internalControl?: ToolServerInternalControl;
+    setupConnectionInfo?: ToolServerConnectionInfo | null;
+    setupConnectionLabel?: string;
   }) {
     this.runtime = options.runtime;
     this.storageDir = options.storageDir;
@@ -662,8 +910,14 @@ export class ToolServer {
       includeSessionTools: options.includeSessionTools ?? false,
     });
     this.internalControl = options.internalControl ?? null;
+    this.setupConnectionInfo = options.setupConnectionInfo ?? null;
+    this.setupConnectionLabel = options.setupConnectionLabel ?? 'This window';
     this.diagnostics = {
       lifecycle: 'starting',
+      setupLabel: this.setupConnectionLabel,
+      setupUrl: this.setupConnectionInfo?.url ?? null,
+      setupToken: this.setupConnectionInfo?.token ?? null,
+      setupRegistrationFile: this.setupConnectionInfo?.registrationFile ?? null,
       url: null,
       host: this.host,
       port: this.port > 0 ? this.port : null,
@@ -761,6 +1015,11 @@ export class ToolServer {
 
     this.updateDiagnostics({
       lifecycle: 'listening',
+      setupLabel: this.setupConnectionLabel,
+      setupUrl: this.setupConnectionInfo?.url ?? this.connectionInfo.url,
+      setupToken: this.setupConnectionInfo?.token ?? token,
+      setupRegistrationFile:
+        this.setupConnectionInfo?.registrationFile ?? this.connectionInfo.registrationFile,
       url: this.connectionInfo.url,
       host: this.host,
       port: address.port,
@@ -843,6 +1102,9 @@ export class ToolServer {
           healthOk: false,
           initializeOk: null,
           toolsListOk: null,
+          resourcesListOk: null,
+          resourceTemplatesListOk: null,
+          resourceReadOk: null,
         },
         lastError: 'MCP server is not listening.',
       });
@@ -857,6 +1119,9 @@ export class ToolServer {
         healthOk: null,
         initializeOk: null,
         toolsListOk: null,
+        resourcesListOk: null,
+        resourceTemplatesListOk: null,
+        resourceReadOk: null,
       },
       lastError: null,
     });
@@ -864,6 +1129,9 @@ export class ToolServer {
     let healthOk: boolean | null = null;
     let initializeOk: boolean | null = null;
     let toolsListOk: boolean | null = null;
+    let resourcesListOk: boolean | null = null;
+    let resourceTemplatesListOk: boolean | null = null;
+    let resourceReadOk: boolean | null = null;
 
     try {
       const healthUrl = new URL('/health', this.connectionInfo.url);
@@ -879,6 +1147,7 @@ export class ToolServer {
 
       const headers = {
         authorization: `Bearer ${this.connectionInfo.token}`,
+        accept: MCP_JSON_ACCEPT_HEADER,
         'content-type': 'application/json',
       };
 
@@ -889,6 +1158,14 @@ export class ToolServer {
           jsonrpc: '2.0',
           id: 'self-test-initialize',
           method: 'initialize',
+          params: {
+            protocolVersion: '2025-11-25',
+            capabilities: {},
+            clientInfo: {
+              name: 'loop-browser-self-test',
+              version: SERVER_VERSION,
+            },
+          },
         }),
       });
 
@@ -898,20 +1175,30 @@ export class ToolServer {
 
       const initializePayload = (await initializeResponse.json()) as {
         result?: {
+          protocolVersion?: string;
           serverInfo?: {
             name?: string;
           };
         };
       };
 
-      initializeOk = initializePayload.result?.serverInfo?.name === SERVER_NAME;
+      initializeOk =
+        initializePayload.result?.serverInfo?.name === SERVER_NAME &&
+        typeof initializePayload.result?.protocolVersion === 'string' &&
+        isSupportedProtocolVersion(initializePayload.result.protocolVersion);
       if (!initializeOk) {
         throw new Error('initialize returned an unexpected server name.');
       }
 
+      const negotiatedProtocolVersion = initializePayload.result!.protocolVersion!;
+      const requestHeaders = {
+        ...headers,
+        'mcp-protocol-version': negotiatedProtocolVersion,
+      };
+
       const toolsResponse = await fetch(this.connectionInfo.url, {
         method: 'POST',
-        headers,
+        headers: requestHeaders,
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 'self-test-tools',
@@ -936,14 +1223,107 @@ export class ToolServer {
         throw new Error('tools/list did not return the expected tool inventory.');
       }
 
+      const resourcesResponse = await fetch(this.connectionInfo.url, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'self-test-resources',
+          method: 'resources/list',
+        }),
+      });
+
+      if (!resourcesResponse.ok) {
+        throw new Error(`resources/list returned ${resourcesResponse.status}.`);
+      }
+
+      const resourcesPayload = (await resourcesResponse.json()) as {
+        result?: {
+          resources?: Array<{ uri?: string }>;
+        };
+      };
+
+      resourcesListOk = resourcesPayload.result?.resources?.some(
+        (resource) => resource.uri === GLOBAL_SESSIONS_RESOURCE_URI,
+      ) ?? false;
+      if (!resourcesListOk) {
+        throw new Error('resources/list did not return the expected resource inventory.');
+      }
+
+      const resourceTemplatesResponse = await fetch(this.connectionInfo.url, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'self-test-resource-templates',
+          method: 'resources/templates/list',
+        }),
+      });
+
+      if (!resourceTemplatesResponse.ok) {
+        throw new Error(
+          `resources/templates/list returned ${resourceTemplatesResponse.status}.`,
+        );
+      }
+
+      const resourceTemplatesPayload = (await resourceTemplatesResponse.json()) as {
+        result?: {
+          resourceTemplates?: Array<{ uriTemplate?: string }>;
+        };
+      };
+
+      resourceTemplatesListOk = resourceTemplatesPayload.result?.resourceTemplates?.some(
+        (resourceTemplate) =>
+          resourceTemplate.uriTemplate === 'loop-browser:///session/{sessionId}/summary',
+      ) ?? false;
+      if (!resourceTemplatesListOk) {
+        throw new Error(
+          'resources/templates/list did not return the expected template inventory.',
+        );
+      }
+
+      const resourceReadResponse = await fetch(this.connectionInfo.url, {
+        method: 'POST',
+        headers: requestHeaders,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'self-test-resource-read',
+          method: 'resources/read',
+          params: {
+            uri: GLOBAL_SESSIONS_RESOURCE_URI,
+          },
+        }),
+      });
+
+      if (!resourceReadResponse.ok) {
+        throw new Error(`resources/read returned ${resourceReadResponse.status}.`);
+      }
+
+      const resourceReadPayload = (await resourceReadResponse.json()) as {
+        result?: {
+          contents?: Array<{ uri?: string; text?: string }>;
+        };
+      };
+
+      resourceReadOk =
+        resourceReadPayload.result?.contents?.[0]?.uri === GLOBAL_SESSIONS_RESOURCE_URI &&
+        typeof resourceReadPayload.result?.contents?.[0]?.text === 'string';
+      if (!resourceReadOk) {
+        throw new Error('resources/read did not return the expected sessions resource.');
+      }
+
       this.updateDiagnostics({
         lastSelfTest: {
           status: 'passed',
           checkedAt,
-          summary: 'Health, initialize, and tools/list succeeded.',
+          summary:
+            'Health, initialize, tools/list, resources/list, resources/templates/list, and resources/read succeeded.',
           healthOk,
           initializeOk,
           toolsListOk,
+          resourcesListOk,
+          resourceTemplatesListOk,
+          resourceReadOk,
         },
         lastError: null,
       });
@@ -958,6 +1338,9 @@ export class ToolServer {
           healthOk,
           initializeOk,
           toolsListOk,
+          resourcesListOk,
+          resourceTemplatesListOk,
+          resourceReadOk,
         },
         lastError: message,
       });
@@ -975,6 +1358,23 @@ export class ToolServer {
       response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       response.end(JSON.stringify({ ok: true }));
       this.recordRequest('GET', '/health', 'success');
+      return;
+    }
+
+    if (request.method === 'GET' && request.url === '/mcp') {
+      if (!this.isAllowedOrigin(request.headers.origin)) {
+        response.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ error: 'Forbidden origin' }));
+        this.recordRequest('GET', '/mcp forbidden origin', 'rejected');
+        return;
+      }
+
+      response.writeHead(405, {
+        allow: 'POST',
+        'content-type': 'application/json; charset=utf-8',
+      });
+      response.end(JSON.stringify({ error: 'SSE streams are not supported on this endpoint.' }));
+      this.recordRequest('GET', '/mcp sse unsupported', 'rejected');
       return;
     }
 
@@ -1048,6 +1448,23 @@ export class ToolServer {
     const requestId = requestPayload.id ?? null;
     const requestMeta = describeRequest(requestPayload.method, requestPayload.params);
     const isExternalToolCall = requestPayload.method === 'tools/call';
+    const protocolVersionHeader = getHeaderValue(request.headers[MCP_PROTOCOL_VERSION_HEADER]);
+
+    if (protocolVersionHeader && !isSupportedProtocolVersion(protocolVersionHeader)) {
+      jsonError(
+        response,
+        400,
+        requestId,
+        -32602,
+        'Unsupported protocol version',
+        {
+          requested: protocolVersionHeader,
+          supported: SUPPORTED_PROTOCOL_VERSIONS,
+        },
+      );
+      this.recordRequest(requestMeta.method, requestMeta.detail, 'error');
+      return;
+    }
 
     if (isExternalToolCall) {
       this.beginExternalToolCall();
@@ -1059,11 +1476,35 @@ export class ToolServer {
         jsonrpc: '2.0',
         id: requestId,
         result,
-      });
+      }, requestPayload.method === 'initialize' && isRecord(result) && typeof result.protocolVersion === 'string'
+        ? { 'MCP-Protocol-Version': result.protocolVersion }
+        : protocolVersionHeader
+          ? { 'MCP-Protocol-Version': protocolVersionHeader }
+          : undefined);
       this.recordRequest(requestMeta.method, requestMeta.detail, 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Internal server error';
-      jsonError(response, 500, requestId, -32000, message);
+      if (error instanceof ToolServerRpcError) {
+        jsonError(
+          response,
+          error.statusCode,
+          requestId,
+          error.code,
+          error.message,
+          error.data,
+          protocolVersionHeader ? { 'MCP-Protocol-Version': protocolVersionHeader } : undefined,
+        );
+      } else {
+        jsonError(
+          response,
+          500,
+          requestId,
+          -32000,
+          message,
+          undefined,
+          protocolVersionHeader ? { 'MCP-Protocol-Version': protocolVersionHeader } : undefined,
+        );
+      }
       this.updateDiagnostics({
         lastError: message,
       });
@@ -1077,23 +1518,36 @@ export class ToolServer {
 
   private async dispatch(method: string, params: unknown): Promise<unknown> {
     switch (method) {
-      case 'initialize':
+      case 'initialize': {
+        const protocolVersion = this.resolveInitializeProtocolVersion(params);
         return {
-          protocolVersion: '2026-03-26',
+          protocolVersion,
           serverInfo: {
             name: SERVER_NAME,
             version: SERVER_VERSION,
           },
           capabilities: {
+            resources: {},
             tools: {
               listChanged: false,
             },
           },
         };
+      }
       case 'tools/list':
         return {
           tools: this.toolDefinitions,
         };
+      case 'resources/list':
+        return {
+          resources: buildResourceDefinitions(await this.listResourceSessions()),
+        };
+      case 'resources/templates/list':
+        return {
+          resourceTemplates: RESOURCE_TEMPLATES,
+        };
+      case 'resources/read':
+        return this.executeResourceRead(params);
       case 'tools/call':
         return this.executeToolCall(params);
       case 'internal/sessionFocus':
@@ -1109,7 +1563,119 @@ export class ToolServer {
         await this.internalControl.closeWindow();
         return { ok: true };
       default:
-        throw new Error(`Unknown JSON-RPC method: ${method}`);
+        throw new ToolServerRpcError(404, -32601, `Unknown JSON-RPC method: ${method}`);
+    }
+  }
+
+  private resolveInitializeProtocolVersion(params: unknown): SupportedProtocolVersion {
+    const requestedVersion =
+      isRecord(params) && typeof params.protocolVersion === 'string'
+        ? params.protocolVersion
+        : DEFAULT_PROTOCOL_VERSION;
+
+    if (!isSupportedProtocolVersion(requestedVersion)) {
+      throw new ToolServerRpcError(400, -32602, 'Unsupported protocol version', {
+        requested: requestedVersion,
+        supported: SUPPORTED_PROTOCOL_VERSIONS,
+      });
+    }
+
+    return requestedVersion;
+  }
+
+  private async listResourceSessions(): Promise<SessionSummary[]> {
+    if (this.runtime.listSessions) {
+      return await this.runtime.listSessions();
+    }
+
+    if (this.runtime.getCurrentSession) {
+      const currentSession = await this.runtime.getCurrentSession();
+      return currentSession ? [currentSession] : [];
+    }
+
+    return [];
+  }
+
+  private async resolveSessionSummary(sessionId: string): Promise<SessionSummary | null> {
+    const sessions = await this.listResourceSessions();
+    return sessions.find((session) => session.sessionId === sessionId) ?? null;
+  }
+
+  private createResourceNotFoundError(uri: string): ToolServerRpcError {
+    return new ToolServerRpcError(404, RESOURCE_NOT_FOUND_ERROR_CODE, 'Resource not found', {
+      uri,
+    });
+  }
+
+  private async executeResourceRead(params: unknown): Promise<unknown> {
+    if (!isRecord(params) || typeof params.uri !== 'string' || params.uri.trim().length === 0) {
+      throw new Error('resources/read requires a non-empty uri.');
+    }
+
+    const parsedResourceUri = parseResourceUri(params.uri);
+    if (!parsedResourceUri) {
+      throw this.createResourceNotFoundError(params.uri);
+    }
+
+    if (parsedResourceUri.kind === 'sessions') {
+      return buildJsonResourceResult(parsedResourceUri.uri, {
+        sessions: await this.listResourceSessions(),
+      });
+    }
+
+    const session = await this.resolveSessionSummary(parsedResourceUri.sessionId);
+    if (!session) {
+      throw this.createResourceNotFoundError(parsedResourceUri.uri);
+    }
+
+    if (this.runtime.proxyResourceRead) {
+      return this.runtime.proxyResourceRead(parsedResourceUri.sessionId, parsedResourceUri.uri);
+    }
+
+    switch (parsedResourceUri.resourceKind) {
+      case 'summary':
+        return buildJsonResourceResult(parsedResourceUri.uri, { session });
+      case 'tabs':
+        return buildJsonResourceResult(parsedResourceUri.uri, {
+          tabs: await this.runtime.listTabs(parsedResourceUri.sessionId),
+        });
+      case 'window':
+        return buildJsonResourceResult(parsedResourceUri.uri, {
+          window: await this.runtime.getWindowState(parsedResourceUri.sessionId),
+        });
+      case 'pickerSelection':
+        return buildJsonResourceResult(parsedResourceUri.uri, {
+          picker: await this.runtime.getPickerState(parsedResourceUri.sessionId),
+        });
+      case 'feedback':
+        return buildJsonResourceResult(parsedResourceUri.uri, {
+          feedback: await this.runtime.getFeedbackState(parsedResourceUri.sessionId),
+        });
+      case 'pageMarkdown': {
+        const markdownView = await this.runtime.getMarkdownForCurrentPage(
+          false,
+          parsedResourceUri.sessionId,
+        );
+
+        if (markdownView.status !== 'ready') {
+          throw new Error(markdownView.lastError ?? 'Markdown view is not ready.');
+        }
+
+        return buildJsonResourceResult(parsedResourceUri.uri, {
+          url: markdownView.sourceUrl,
+          title: markdownView.title,
+          markdown: markdownView.markdown,
+          author: markdownView.author,
+          site: markdownView.site,
+          wordCount: markdownView.wordCount,
+        });
+      }
+      case 'artifacts':
+        return buildJsonResourceResult(parsedResourceUri.uri, {
+          artifacts: await this.artifactStore.listArtifacts(),
+        });
+      default:
+        throw this.createResourceNotFoundError(parsedResourceUri.uri);
     }
   }
 

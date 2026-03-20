@@ -44,6 +44,7 @@ import {
   normalizeHexColorDraft,
   resolveDraftProjectIconPath,
 } from './project-style-form';
+import { copyTextToClipboard } from './clipboard';
 
 const emptyState = createEmptyNavigationState();
 const emptyChromeAppearanceState = createEmptyChromeAppearanceState();
@@ -340,15 +341,8 @@ const getSessionChipMeta = (session: SessionSummary): string => {
   return session.dockIconStatus === 'failed' ? 'Dock icon issue' : 'Ready';
 };
 
-const getMcpAuthLabel = (state: McpViewState): string => {
-  if (!state.hasAuthToken) {
-    return `${state.authType} missing`;
-  }
-
-  return state.authTokenPreview
-    ? `${state.authType} configured | ${state.authTokenPreview}`
-    : `${state.authType} configured`;
-};
+const getMcpSetupAuthorizationValue = (state: McpViewState): string =>
+  state.setupAuthToken ? `Bearer ${state.setupAuthToken}` : '';
 
 const getMcpIndicatorLabel = (state: McpViewState): string => {
   switch (state.indicator) {
@@ -1167,13 +1161,15 @@ const ChromeSurface = ({
     await runCommand({ action: 'navigate', target: draftUrl });
   };
 
-  const handleCopyDescriptor = (): void => {
+  const handleCopyDescriptor = async (): Promise<void> => {
     if (!pickerState.lastSelection) {
       return;
     }
 
-    window.agentBrowser.copyText(JSON.stringify(pickerState.lastSelection, null, 2));
-    setCopyFeedback('Copied');
+    const didCopy = await copyTextToClipboard(
+      JSON.stringify(pickerState.lastSelection, null, 2),
+    );
+    setCopyFeedback(didCopy ? 'Copied' : 'Copy failed');
 
     if (copyTimerRef.current !== null) {
       window.clearTimeout(copyTimerRef.current);
@@ -1520,13 +1516,13 @@ const MarkdownSurface = (): JSX.Element => {
     await window.agentBrowser.executeMarkdownView(command);
   };
 
-  const handleCopyMarkdown = (): void => {
+  const handleCopyMarkdown = async (): Promise<void> => {
     if (!markdownViewState.markdown) {
       return;
     }
 
-    window.agentBrowser.copyText(markdownViewState.markdown);
-    setCopyFeedback('Copied');
+    const didCopy = await copyTextToClipboard(markdownViewState.markdown);
+    setCopyFeedback(didCopy ? 'Copied' : 'Copy failed');
 
     if (copyTimerRef.current !== null) {
       window.clearTimeout(copyTimerRef.current);
@@ -1610,9 +1606,54 @@ const MarkdownSurface = (): JSX.Element => {
 const McpSurface = (): JSX.Element => {
   const mcpViewState = useMcpViewState();
   const mcpPresence = useMcpPresence(mcpViewState);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const runMcpCommand = async (command: McpViewCommand): Promise<void> => {
     await window.agentBrowser.executeMcpView(command);
+  };
+
+  const transportValue = mcpViewState.setupTransportUrl || '';
+  const authHeaderValue = getMcpSetupAuthorizationValue(mcpViewState);
+  const authTokenValue = mcpViewState.setupAuthToken || '';
+  const connectionTransportValue = mcpViewState.setupTransportUrl || '';
+
+  const handleCopy = async (field: string, value: string): Promise<void> => {
+    if (!value) {
+      return;
+    }
+
+    const didCopy = await copyTextToClipboard(value);
+    setCopiedField(didCopy ? field : `${field}-failed`);
+
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopiedField(null);
+      copyTimerRef.current = null;
+    }, 1500);
+  };
+
+  const getCopyLabel = (field: string, fallback: string): string => {
+    if (copiedField === field) {
+      return 'Copied';
+    }
+
+    if (copiedField === `${field}-failed`) {
+      return 'Copy failed';
+    }
+
+    return fallback;
   };
 
   return (
@@ -1669,26 +1710,96 @@ const McpSurface = (): JSX.Element => {
 
         <div className="mcpSurface__body">
           <section className="mcpSurface__section">
+            <div className="mcpSurface__sectionHeader">
+              <div className="mcpSurface__sectionTitle">Codex Setup</div>
+              <div className="mcpSurface__sectionMeta">
+                Use {mcpViewState.setupLabel.toLowerCase()} as a custom MCP
+              </div>
+            </div>
+            <div className="mcpSurface__activitySummary">
+              In Codex, choose <strong>Streamable HTTP</strong>, paste the URL below, then add
+              the <strong>Authorization</strong> header value. Leave the bearer-token env var blank
+              unless you already manage it outside the app.
+            </div>
+            <div className="mcpSurface__setupList">
+              <div className="mcpSurface__setupRow">
+                <div className="mcpSurface__setupLabel">Transport type</div>
+                <div className="mcpSurface__setupValue">Streamable HTTP</div>
+              </div>
+              <div className="mcpSurface__setupRow">
+                <div className="mcpSurface__setupLabel">URL</div>
+                <div className="mcpSurface__setupValueGroup">
+                  <code className="mcpSurface__codeValue">
+                    {transportValue || 'Waiting for server startup'}
+                  </code>
+                  <button
+                    className="shell__pillButton shell__pillButton--muted"
+                    disabled={!transportValue}
+                    onClick={() => void handleCopy('transport', transportValue)}
+                    type="button"
+                  >
+                    {getCopyLabel('transport', 'Copy URL')}
+                  </button>
+                </div>
+              </div>
+              <div className="mcpSurface__setupRow">
+                <div className="mcpSurface__setupLabel">Header key</div>
+                <div className="mcpSurface__setupValueGroup">
+                  <code className="mcpSurface__codeValue">Authorization</code>
+                  <button
+                    className="shell__pillButton shell__pillButton--muted"
+                    onClick={() => void handleCopy('auth-key', 'Authorization')}
+                    type="button"
+                  >
+                    {getCopyLabel('auth-key', 'Copy Key')}
+                  </button>
+                </div>
+              </div>
+              <div className="mcpSurface__setupRow">
+                <div className="mcpSurface__setupLabel">Header value</div>
+                <div className="mcpSurface__setupValueGroup">
+                  <code className="mcpSurface__codeValue">
+                    {authHeaderValue || 'Waiting for bearer token'}
+                  </code>
+                  <button
+                    className="shell__pillButton shell__pillButton--muted"
+                    disabled={!authHeaderValue}
+                    onClick={() => void handleCopy('auth-header', authHeaderValue)}
+                    type="button"
+                  >
+                    {getCopyLabel('auth-header', 'Copy Header')}
+                  </button>
+                </div>
+              </div>
+              <div className="mcpSurface__setupRow">
+                <div className="mcpSurface__setupLabel">Raw token</div>
+                <div className="mcpSurface__setupValueGroup">
+                  <code className="mcpSurface__codeValue">
+                    {authTokenValue || 'Waiting for bearer token'}
+                  </code>
+                  <button
+                    className="shell__pillButton shell__pillButton--muted"
+                    disabled={!authTokenValue}
+                    onClick={() => void handleCopy('auth-token', authTokenValue)}
+                    type="button"
+                  >
+                    {getCopyLabel('auth-token', 'Copy Token')}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="mcpSurface__hint">
+              After Codex connects, start with <code>session.list</code> because browser tools are
+              session-scoped.
+            </div>
+          </section>
+
+          <section className="mcpSurface__section">
             <div className="mcpSurface__sectionTitle">Connection</div>
             <dl className="mcpSurface__metaList">
               <div className="mcpSurface__metaRow">
-                <dt>Transport</dt>
-                <dd>{mcpViewState.transportUrl || 'Waiting for server startup'}</dd>
-              </div>
-              <div className="mcpSurface__metaRow">
-                <dt>Host / Port</dt>
-                <dd>
-                  {mcpViewState.host || '127.0.0.1'}
-                  {mcpViewState.port ? `:${mcpViewState.port}` : ''}
-                </dd>
-              </div>
-              <div className="mcpSurface__metaRow">
-                <dt>Auth</dt>
-                <dd>{getMcpAuthLabel(mcpViewState)}</dd>
-              </div>
-              <div className="mcpSurface__metaRow">
-                <dt>Manifest</dt>
-                <dd>{mcpViewState.registrationFile || 'Waiting for registration file'}</dd>
+                <dt>URL</dt>
+                <dd>{connectionTransportValue || 'Waiting for server startup'}</dd>
               </div>
             </dl>
           </section>
@@ -1777,6 +1888,15 @@ const McpSurface = (): JSX.Element => {
               </div>
               <div className="mcpSurface__debugChip">
                 Tools: {mcpViewState.lastSelfTest.toolsListOk === null ? 'Pending' : mcpViewState.lastSelfTest.toolsListOk ? 'OK' : 'Fail'}
+              </div>
+              <div className="mcpSurface__debugChip">
+                Resources: {mcpViewState.lastSelfTest.resourcesListOk === null ? 'Pending' : mcpViewState.lastSelfTest.resourcesListOk ? 'OK' : 'Fail'}
+              </div>
+              <div className="mcpSurface__debugChip">
+                Templates: {mcpViewState.lastSelfTest.resourceTemplatesListOk === null ? 'Pending' : mcpViewState.lastSelfTest.resourceTemplatesListOk ? 'OK' : 'Fail'}
+              </div>
+              <div className="mcpSurface__debugChip">
+                Read: {mcpViewState.lastSelfTest.resourceReadOk === null ? 'Pending' : mcpViewState.lastSelfTest.resourceReadOk ? 'OK' : 'Fail'}
               </div>
             </div>
             {mcpViewState.lastError ? (
@@ -2276,12 +2396,12 @@ const FeedbackSurface = (): JSX.Element => {
     setReplyDraft('');
   };
 
-  const handleCopyAnnotation = (): void => {
+  const handleCopyAnnotation = async (): Promise<void> => {
     if (!activeAnnotation) {
       return;
     }
 
-    window.agentBrowser.copyText(JSON.stringify(activeAnnotation, null, 2));
+    await copyTextToClipboard(JSON.stringify(activeAnnotation, null, 2));
   };
 
   return (

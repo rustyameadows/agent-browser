@@ -34,6 +34,9 @@ export interface McpSelfTestSummary {
   healthOk: boolean | null;
   initializeOk: boolean | null;
   toolsListOk: boolean | null;
+  resourcesListOk: boolean | null;
+  resourceTemplatesListOk: boolean | null;
+  resourceReadOk: boolean | null;
 }
 
 export interface McpAgentActivity {
@@ -48,10 +51,15 @@ export interface McpViewState {
   indicator: McpIndicatorColor;
   lifecycle: McpLifecycleState;
   statusLabel: string;
+  setupLabel: string;
+  setupTransportUrl: string;
+  setupAuthToken: string | null;
+  setupRegistrationFile: string;
   transportUrl: string;
   host: string;
   port: number | null;
   authType: string;
+  authToken: string | null;
   authTokenPreview: string | null;
   hasAuthToken: boolean;
   registrationFile: string;
@@ -76,10 +84,15 @@ export const createEmptyMcpViewState = (): McpViewState => ({
   indicator: 'yellow',
   lifecycle: 'starting',
   statusLabel: 'Starting MCP server...',
+  setupLabel: 'This window',
+  setupTransportUrl: '',
+  setupAuthToken: null,
+  setupRegistrationFile: '',
   transportUrl: '',
   host: '',
   port: null,
   authType: 'Bearer token',
+  authToken: null,
   authTokenPreview: null,
   hasAuthToken: false,
   registrationFile: '',
@@ -98,6 +111,9 @@ export const createEmptyMcpViewState = (): McpViewState => ({
     healthOk: null,
     initializeOk: null,
     toolsListOk: null,
+    resourcesListOk: null,
+    resourceTemplatesListOk: null,
+    resourceReadOk: null,
   },
   lastError: null,
   lastUpdatedAt: null,
@@ -137,7 +153,11 @@ const isMcpSelfTestSummary = (value: unknown): value is McpSelfTestSummary => {
     typeof value.summary === 'string' &&
     (typeof value.healthOk === 'boolean' || value.healthOk === null) &&
     (typeof value.initializeOk === 'boolean' || value.initializeOk === null) &&
-    (typeof value.toolsListOk === 'boolean' || value.toolsListOk === null)
+    (typeof value.toolsListOk === 'boolean' || value.toolsListOk === null) &&
+    (typeof value.resourcesListOk === 'boolean' || value.resourcesListOk === null) &&
+    (typeof value.resourceTemplatesListOk === 'boolean' ||
+      value.resourceTemplatesListOk === null) &&
+    (typeof value.resourceReadOk === 'boolean' || value.resourceReadOk === null)
   );
 };
 
@@ -169,10 +189,15 @@ export const isMcpViewState = (value: unknown): value is McpViewState => {
     typeof value.lifecycle === 'string' &&
     mcpLifecycleStates.includes(value.lifecycle as McpLifecycleState) &&
     typeof value.statusLabel === 'string' &&
+    typeof value.setupLabel === 'string' &&
+    typeof value.setupTransportUrl === 'string' &&
+    (typeof value.setupAuthToken === 'string' || value.setupAuthToken === null) &&
+    typeof value.setupRegistrationFile === 'string' &&
     typeof value.transportUrl === 'string' &&
     typeof value.host === 'string' &&
     (typeof value.port === 'number' || value.port === null) &&
     typeof value.authType === 'string' &&
+    (typeof value.authToken === 'string' || value.authToken === null) &&
     (typeof value.authTokenPreview === 'string' || value.authTokenPreview === null) &&
     typeof value.hasAuthToken === 'boolean' &&
     typeof value.registrationFile === 'string' &&

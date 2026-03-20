@@ -200,7 +200,7 @@ const writeSmokeProjectFixture = async (
   }
 }
 
-const callTool = async (registration, id, name, args = {}) =>
+const callTool = async (registration, id, name, args = {}, options = {}) =>
   makeRpcRequest(
     registration,
     'tools/call',
@@ -209,16 +209,21 @@ const callTool = async (registration, id, name, args = {}) =>
       arguments: args,
     },
     id,
+    options,
   )
 
-const makeRpcRequest = async (registration, method, params, id) => {
+const makeRpcRequest = async (registration, method, params, id, options = {}) => {
   const token = String(registration.transport.headers.Authorization).replace(/^Bearer\s+/, '')
 
   return requestJson(registration.transport.url, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,
+      accept: 'application/json, text/event-stream',
       'content-type': 'application/json',
+      ...(options.protocolVersion
+        ? { 'mcp-protocol-version': options.protocolVersion }
+        : {}),
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -229,14 +234,18 @@ const makeRpcRequest = async (registration, method, params, id) => {
   })
 }
 
-const makeNotification = async (registration, method, params) => {
+const makeNotification = async (registration, method, params, options = {}) => {
   const token = String(registration.transport.headers.Authorization).replace(/^Bearer\s+/, '')
 
   return requestJson(registration.transport.url, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,
+      accept: 'application/json, text/event-stream',
       'content-type': 'application/json',
+      ...(options.protocolVersion
+        ? { 'mcp-protocol-version': options.protocolVersion }
+        : {}),
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -586,15 +595,43 @@ const run = async () => {
     state.requests.push({ name: 'unauthorized.initialize', status: unauthorized.status, body: unauthorized.body })
     assert(unauthorized.status === 401, 'Unauthorized initialize request should return 401.')
 
-    const initialize = await makeRpcRequest(registration, 'initialize', {}, 1)
+    const sseProbe = await requestJson(registration.transport.url, {
+      method: 'GET',
+    })
+    state.requests.push({ name: 'get.mcp', status: sseProbe.status, body: sseProbe.body })
+    assert(sseProbe.status === 405, 'GET /mcp should return 405 when SSE is unsupported.')
+
+    const initialize = await makeRpcRequest(
+      registration,
+      'initialize',
+      {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: {
+          name: 'mcp-smoke',
+          version: '1.0.0',
+        },
+      },
+      1,
+    )
     state.requests.push({ name: 'initialize', status: initialize.status, body: initialize.body })
     assert(initialize.status === 200, 'initialize should return 200.')
     assert(
       initialize.body?.result?.serverInfo?.name === 'agent-browser',
       'initialize did not return the expected server info.',
     )
+    assert(
+      initialize.body?.result?.protocolVersion === '2025-11-25',
+      'initialize did not negotiate the expected protocol version.',
+    )
+    const protocolVersion = initialize.body?.result?.protocolVersion
 
-    const initialized = await makeNotification(registration, 'notifications/initialized', {})
+    const initialized = await makeNotification(
+      registration,
+      'notifications/initialized',
+      {},
+      { protocolVersion },
+    )
     state.requests.push({
       name: 'notifications/initialized',
       status: initialized.status,
@@ -602,7 +639,7 @@ const run = async () => {
     })
     assert(initialized.status === 202, 'notifications/initialized should return 202.')
 
-    const tools = await makeRpcRequest(registration, 'tools/list', {}, 2)
+    const tools = await makeRpcRequest(registration, 'tools/list', {}, 2, { protocolVersion })
     state.requests.push({ name: 'tools/list', status: tools.status, body: tools.body })
     assert(tools.status === 200, 'tools/list should return 200.')
 
@@ -615,6 +652,61 @@ const run = async () => {
     assert(
       navigateDefinition?.inputSchema?.required?.includes('sessionId'),
       'tools/list did not mark page.navigate as requiring sessionId.',
+    )
+
+    const resources = await makeRpcRequest(
+      registration,
+      'resources/list',
+      {},
+      'resources-list',
+      { protocolVersion },
+    )
+    state.requests.push({ name: 'resources/list', status: resources.status, body: resources.body })
+    assert(resources.status === 200, 'resources/list should return 200.')
+    const resourceUris = resources.body?.result?.resources?.map((resource) => resource.uri) ?? []
+    assert(
+      resourceUris.includes('loop-browser:///sessions'),
+      'resources/list did not include the sessions resource.',
+    )
+
+    const resourceTemplates = await makeRpcRequest(
+      registration,
+      'resources/templates/list',
+      {},
+      'resource-templates-list',
+      { protocolVersion },
+    )
+    state.requests.push({
+      name: 'resources/templates/list',
+      status: resourceTemplates.status,
+      body: resourceTemplates.body,
+    })
+    assert(resourceTemplates.status === 200, 'resources/templates/list should return 200.')
+    const resourceTemplateUris =
+      resourceTemplates.body?.result?.resourceTemplates?.map(
+        (resourceTemplate) => resourceTemplate.uriTemplate,
+      ) ?? []
+    assert(
+      resourceTemplateUris.includes('loop-browser:///session/{sessionId}/summary'),
+      'resources/templates/list did not include the session summary template.',
+    )
+
+    const sessionsResource = await makeRpcRequest(
+      registration,
+      'resources/read',
+      { uri: 'loop-browser:///sessions' },
+      'resource-read-sessions',
+      { protocolVersion },
+    )
+    state.requests.push({
+      name: 'resources/read:sessions',
+      status: sessionsResource.status,
+      body: sessionsResource.body,
+    })
+    assert(sessionsResource.status === 200, 'resources/read(sessions) should return 200.')
+    assert(
+      sessionsResource.body?.result?.contents?.[0]?.uri === 'loop-browser:///sessions',
+      'resources/read(sessions) did not echo the sessions resource URI.',
     )
 
     const missingSessionId = await callTool(registration, 3, 'chrome.getAppearance')
@@ -661,6 +753,52 @@ const run = async () => {
     const sessionB = findSessionByProjectRoot(sessions, projectFixtureB.projectRoot)
     assert(sessionA, 'session.list did not include project-a.')
     assert(sessionB, 'session.list did not include project-b.')
+
+    const resourcesAfterSessions = await makeRpcRequest(
+      registration,
+      'resources/list',
+      {},
+      'resources-list-after-open',
+      { protocolVersion },
+    )
+    state.requests.push({
+      name: 'resources/list:after-open',
+      status: resourcesAfterSessions.status,
+      body: resourcesAfterSessions.body,
+    })
+    assert(resourcesAfterSessions.status === 200, 'resources/list after opening sessions should return 200.')
+    const resourceUrisAfterOpen =
+      resourcesAfterSessions.body?.result?.resources?.map((resource) => resource.uri) ?? []
+    assert(
+      resourceUrisAfterOpen.includes(`loop-browser:///session/${sessionA.sessionId}/summary`),
+      'resources/list after opening sessions did not include the project-a summary resource.',
+    )
+    assert(
+      resourceUrisAfterOpen.includes(`loop-browser:///session/${sessionB.sessionId}/summary`),
+      'resources/list after opening sessions did not include the project-b summary resource.',
+    )
+
+    const sessionSummaryResource = await makeRpcRequest(
+      registration,
+      'resources/read',
+      { uri: `loop-browser:///session/${sessionA.sessionId}/summary` },
+      'resource-read-project-a-summary',
+      { protocolVersion },
+    )
+    state.requests.push({
+      name: 'resources/read:project-a-summary',
+      status: sessionSummaryResource.status,
+      body: sessionSummaryResource.body,
+    })
+    assert(
+      sessionSummaryResource.status === 200,
+      'resources/read(project-a summary) should return 200.',
+    )
+    assert(
+      JSON.parse(sessionSummaryResource.body?.result?.contents?.[0]?.text ?? '{}')?.session
+        ?.sessionId === sessionA.sessionId,
+      'resources/read(project-a summary) did not return the expected session metadata.',
+    )
 
     const currentSession = await callTool(registration, 7, 'session.getCurrent')
     state.requests.push({
