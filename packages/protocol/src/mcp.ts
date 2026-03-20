@@ -1,8 +1,22 @@
+import {
+  isPanelPresentationMode,
+  isPanelSidebarSide,
+  type PanelPresentationMode,
+  type PanelSidebarSide,
+} from './panel-presentation';
+
 export const MCP_VIEW_COMMAND_CHANNEL = 'mcp-view:command';
 export const MCP_VIEW_GET_STATE_CHANNEL = 'mcp-view:get-state';
 export const MCP_VIEW_STATE_CHANNEL = 'mcp-view:state';
 
-export const mcpViewActions = ['open', 'close', 'toggle', 'refresh', 'selfTest'] as const;
+export const mcpViewActions = [
+  'open',
+  'close',
+  'toggle',
+  'refresh',
+  'selfTest',
+  'setPresentation',
+] as const;
 export const mcpIndicatorColors = ['green', 'yellow', 'red'] as const;
 export const mcpLifecycleStates = ['starting', 'listening', 'stopped', 'error'] as const;
 export const mcpSelfTestStatuses = ['idle', 'running', 'passed', 'failed'] as const;
@@ -16,9 +30,15 @@ export type McpSelfTestStatus = (typeof mcpSelfTestStatuses)[number];
 export type McpRequestOutcome = (typeof mcpRequestOutcomes)[number];
 export type McpAgentActivityPhase = (typeof mcpAgentActivityPhases)[number];
 
-export type McpViewCommand = {
-  action: McpViewAction;
-};
+export type McpViewCommand =
+  | {
+      action: 'open' | 'close' | 'toggle' | 'refresh' | 'selfTest';
+    }
+  | {
+      action: 'setPresentation';
+      mode: PanelPresentationMode;
+      side?: PanelSidebarSide;
+    };
 
 export interface McpRecentRequest {
   at: string;
@@ -124,7 +144,18 @@ export const isMcpViewCommand = (value: unknown): value is McpViewCommand => {
     return false;
   }
 
-  return mcpViewActions.includes(value.action as McpViewAction);
+  if (!mcpViewActions.includes(value.action as McpViewAction)) {
+    return false;
+  }
+
+  if (value.action === 'setPresentation') {
+    return (
+      isPanelPresentationMode(value.mode) &&
+      (!('side' in value) || value.side === undefined || isPanelSidebarSide(value.side))
+    );
+  }
+
+  return true;
 };
 
 const isMcpRecentRequest = (value: unknown): value is McpRecentRequest => {

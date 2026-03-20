@@ -57,6 +57,9 @@ describe('feedback protocol guards', () => {
       }),
     ).toBe(true);
     expect(
+      isFeedbackCommand({ action: 'setPresentation', mode: 'sidebar', side: 'right' }),
+    ).toBe(true);
+    expect(
       isFeedbackState({
         ...createEmptyFeedbackState(),
         isOpen: true,
@@ -84,6 +87,9 @@ describe('feedback protocol guards', () => {
         annotationId: 'annotation-1',
         status: 'done',
       }),
+    ).toBe(false);
+    expect(
+      isFeedbackCommand({ action: 'setPresentation', mode: 'sidebar', side: 'bottom' }),
     ).toBe(false);
     expect(
       isFeedbackState({

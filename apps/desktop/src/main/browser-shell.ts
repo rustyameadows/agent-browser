@@ -75,6 +75,8 @@ import {
   isProjectAgentLoginSaveRequest,
   isPagePickerEvent,
   isPageLoginEvent,
+  normalizePanelPresentationPreference,
+  panelSurfaceIds,
   isPickerCommand,
   isSessionCommand,
   isStyleViewCommand,
@@ -98,6 +100,10 @@ import {
   type StyleViewState,
   type NavigationCommand,
   type NavigationState,
+  type PanelPresentationMode,
+  type PanelPresentationPreference,
+  type PanelSidebarSide,
+  type PanelSurfaceId,
   type AgentLoginCtaState,
   type PageAgentOverlayState,
   type PickerCommand,
@@ -142,6 +148,22 @@ const LAUNCHER_WINDOW_WIDTH = 560;
 const LAUNCHER_WINDOW_HEIGHT = 520;
 const LAUNCHER_WINDOW_MIN_WIDTH = 420;
 const LAUNCHER_WINDOW_MIN_HEIGHT = 420;
+const FLOATING_PILL_MAX_WIDTH = 720;
+const FLOATING_PILL_MIN_WIDTH = 360;
+const FLOATING_PILL_MAX_HEIGHT = 680;
+const FLOATING_PILL_MARGIN = 24;
+const POPOUT_WINDOW_WIDTH = 520;
+const POPOUT_WINDOW_HEIGHT = 760;
+const POPOUT_WINDOW_MIN_WIDTH = 360;
+const POPOUT_WINDOW_MIN_HEIGHT = 480;
+
+const panelSurfaceLabels: Record<PanelSurfaceId, string> = {
+  feedback: 'Feedback',
+  style: 'Style',
+  markdown: 'Markdown',
+  mcp: 'MCP',
+  project: 'Project Settings',
+};
 
 type TrustedSurface =
   | 'chrome'
@@ -151,8 +173,6 @@ type TrustedSurface =
   | 'feedback'
   | 'project'
   | 'style';
-
-type SidePanelKind = 'markdown' | 'mcp' | 'feedback' | 'project' | 'style';
 
 type PageMarkupSnapshot = {
   html: string;
@@ -206,6 +226,9 @@ export class BrowserShell {
   private feedbackPanelMounted = false;
   private projectPanelMounted = false;
   private stylePanelMounted = false;
+  private popoutWindow: BaseWindow | null = null;
+  private popoutSurface: PanelSurfaceId | null = null;
+  private suppressNextPopoutCloseForSurface: PanelSurfaceId | null = null;
   private lastError: string | null = null;
   private hasVisibleLoginForm = false;
   private pickerState: PickerState = createEmptyPickerState();
@@ -277,11 +300,19 @@ export class BrowserShell {
     this.registerIpcHandlers();
     this.projectAppearanceUnsubscribe = this.projectAppearance.subscribe((state) => {
       const previousProjectRoot = this.chromeAppearanceState.projectRoot;
+      const previousPanelPreferences = this.chromeAppearanceState.panelPreferences;
       this.chromeAppearanceState = {
         ...this.mergeChromeAppearanceDiagnostics(state),
         isOpen: this.chromeAppearanceState.isOpen,
       };
       this.applyChromeAppearance();
+      if (
+        previousPanelPreferences !== this.chromeAppearanceState.panelPreferences &&
+        this.getOpenPanelSurface() !== null
+      ) {
+        this.ensureOpenPanelHosted();
+        this.layoutViews();
+      }
       void this.syncDockIcon();
       this.sendChromeAppearanceState();
       if (state.projectRoot !== previousProjectRoot) {
@@ -527,7 +558,10 @@ export class BrowserShell {
   }
 
   getChromeAppearanceState(): ChromeAppearanceState {
-    return { ...this.chromeAppearanceState };
+    return {
+      ...this.chromeAppearanceState,
+      panelPreferences: this.clonePanelPreferences(),
+    };
   }
 
   getProjectAgentLoginState(): ProjectAgentLoginState {
@@ -577,6 +611,343 @@ export class BrowserShell {
       chromeHeight: CHROME_HEIGHT,
       deviceScaleFactor: display.scaleFactor,
     };
+  }
+
+  private clonePanelPreferences(): ChromeAppearanceState['panelPreferences'] {
+    return panelSurfaceIds.reduce<ChromeAppearanceState['panelPreferences']>((result, surface) => {
+      result[surface] = { ...normalizePanelPresentationPreference(this.chromeAppearanceState.panelPreferences[surface]) };
+      return result;
+    }, {} as ChromeAppearanceState['panelPreferences']);
+  }
+
+  private getPanelPresentation(surface: PanelSurfaceId): PanelPresentationPreference {
+    return normalizePanelPresentationPreference(this.chromeAppearanceState.panelPreferences[surface]);
+  }
+
+  private getPanelView(surface: PanelSurfaceId): WebContentsView | null {
+    switch (surface) {
+      case 'feedback':
+        return this.feedbackPanelView;
+      case 'style':
+        return this.stylePanelView;
+      case 'markdown':
+        return this.markdownPanelView;
+      case 'mcp':
+        return this.mcpPanelView;
+      case 'project':
+        return this.projectPanelView;
+    }
+  }
+
+  private isPanelMounted(surface: PanelSurfaceId): boolean {
+    switch (surface) {
+      case 'feedback':
+        return this.feedbackPanelMounted;
+      case 'style':
+        return this.stylePanelMounted;
+      case 'markdown':
+        return this.markdownPanelMounted;
+      case 'mcp':
+        return this.mcpPanelMounted;
+      case 'project':
+        return this.projectPanelMounted;
+    }
+  }
+
+  private setPanelMounted(surface: PanelSurfaceId, mounted: boolean): void {
+    switch (surface) {
+      case 'feedback':
+        this.feedbackPanelMounted = mounted;
+        return;
+      case 'style':
+        this.stylePanelMounted = mounted;
+        return;
+      case 'markdown':
+        this.markdownPanelMounted = mounted;
+        return;
+      case 'mcp':
+        this.mcpPanelMounted = mounted;
+        return;
+      case 'project':
+        this.projectPanelMounted = mounted;
+        return;
+    }
+  }
+
+  private isPanelOpen(surface: PanelSurfaceId): boolean {
+    switch (surface) {
+      case 'feedback':
+        return this.feedbackState.isOpen;
+      case 'style':
+        return this.styleViewState.isOpen;
+      case 'markdown':
+        return this.markdownViewState.isOpen;
+      case 'mcp':
+        return this.mcpViewState.isOpen;
+      case 'project':
+        return this.chromeAppearanceState.isOpen;
+    }
+  }
+
+  private getOpenPanelSurface(): PanelSurfaceId | null {
+    if (this.feedbackState.isOpen && this.feedbackPanelView) {
+      return 'feedback';
+    }
+
+    if (this.styleViewState.isOpen && this.stylePanelView) {
+      return 'style';
+    }
+
+    if (this.mcpViewState.isOpen && this.mcpPanelView) {
+      return 'mcp';
+    }
+
+    if (this.chromeAppearanceState.isOpen && this.projectPanelView) {
+      return 'project';
+    }
+
+    if (this.markdownViewState.isOpen && this.markdownPanelView) {
+      return 'markdown';
+    }
+
+    return null;
+  }
+
+  private getActiveSidePanel(): PanelSurfaceId | null {
+    const activeSurface = this.getOpenPanelSurface();
+    if (!activeSurface) {
+      return null;
+    }
+
+    return this.getPanelPresentation(activeSurface).mode === 'sidebar' ? activeSurface : null;
+  }
+
+  private getMainWindowPanelSurface(): PanelSurfaceId | null {
+    const activeSurface = this.getOpenPanelSurface();
+    if (!activeSurface) {
+      return null;
+    }
+
+    return this.getPanelPresentation(activeSurface).mode === 'popout' ? null : activeSurface;
+  }
+
+  private ensureOpenPanelHosted(): void {
+    const activeSurface = this.getOpenPanelSurface();
+    if (!activeSurface) {
+      return;
+    }
+
+    this.ensurePanelHosted(activeSurface);
+  }
+
+  private ensurePanelHosted(surface: PanelSurfaceId): void {
+    const view = this.getPanelView(surface);
+    if (!view) {
+      return;
+    }
+
+    const presentation = this.getPanelPresentation(surface);
+    if (presentation.mode === 'popout') {
+      this.mountPanelInPopout(surface, view);
+      return;
+    }
+
+    this.mountPanelInMainWindow(surface, view);
+  }
+
+  private mountPanelInMainWindow(surface: PanelSurfaceId, view: WebContentsView): void {
+    if (!this.window) {
+      throw new Error('Window is not ready.');
+    }
+
+    if (this.popoutSurface === surface) {
+      this.detachPanelFromPopout(surface);
+      this.closePopoutWindow(true);
+    }
+
+    if (!this.isPanelMounted(surface)) {
+      this.window.contentView.addChildView(view);
+      this.setPanelMounted(surface, true);
+    }
+  }
+
+  private mountPanelInPopout(surface: PanelSurfaceId, view: WebContentsView): void {
+    if (this.window && this.isPanelMounted(surface) && this.popoutSurface !== surface) {
+      this.window.contentView.removeChildView(view);
+      this.setPanelMounted(surface, false);
+    }
+
+    if (this.popoutSurface && this.popoutSurface !== surface) {
+      this.closePopoutWindow(false);
+    }
+
+    if (!this.popoutWindow || this.popoutSurface !== surface) {
+      this.createPopoutWindow(surface);
+    }
+
+    if (!this.popoutWindow) {
+      return;
+    }
+
+    if (!this.isPanelMounted(surface)) {
+      this.popoutWindow.contentView.addChildView(view);
+      this.setPanelMounted(surface, true);
+    }
+
+    this.popoutSurface = surface;
+    this.layoutPopoutWindow();
+  }
+
+  private detachPanelFromPopout(surface: PanelSurfaceId): void {
+    const view = this.getPanelView(surface);
+    if (!view || !this.popoutWindow || this.popoutSurface !== surface || !this.isPanelMounted(surface)) {
+      return;
+    }
+
+    this.popoutWindow.contentView.removeChildView(view);
+    this.setPanelMounted(surface, false);
+  }
+
+  private detachPanelSurface(surface: PanelSurfaceId): void {
+    const view = this.getPanelView(surface);
+    if (!view) {
+      return;
+    }
+
+    if (this.popoutSurface === surface) {
+      this.detachPanelFromPopout(surface);
+      this.closePopoutWindow(false);
+      return;
+    }
+
+    if (this.window && this.isPanelMounted(surface)) {
+      this.window.contentView.removeChildView(view);
+      this.setPanelMounted(surface, false);
+    }
+  }
+
+  private createPopoutWindow(surface: PanelSurfaceId): void {
+    this.ensureWindow();
+
+    const popoutWindow = new BaseWindow({
+      width: POPOUT_WINDOW_WIDTH,
+      height: POPOUT_WINDOW_HEIGHT,
+      minWidth: POPOUT_WINDOW_MIN_WIDTH,
+      minHeight: POPOUT_WINDOW_MIN_HEIGHT,
+      title: `Loop Browser ${panelSurfaceLabels[surface]}`,
+      backgroundColor: this.chromeAppearanceState.chromeColor,
+      parent: this.window ?? undefined,
+      titleBarStyle: 'hiddenInset',
+    });
+
+    popoutWindow.on('resize', () => {
+      this.layoutPopoutWindow();
+    });
+
+    popoutWindow.on('close', () => {
+      if (this.popoutSurface === surface) {
+        this.detachPanelFromPopout(surface);
+      }
+    });
+
+    popoutWindow.on('closed', () => {
+      const shouldSuppress = this.suppressNextPopoutCloseForSurface === surface;
+      if (shouldSuppress) {
+        this.suppressNextPopoutCloseForSurface = null;
+      }
+
+      if (this.popoutWindow === popoutWindow) {
+        this.popoutWindow = null;
+        this.popoutSurface = null;
+      }
+
+      if (!shouldSuppress && this.isPanelOpen(surface)) {
+        this.closePanelSurface(surface);
+      }
+    });
+
+    this.popoutWindow = popoutWindow;
+    this.popoutSurface = surface;
+  }
+
+  private closePopoutWindow(preserveSurfaceOpen: boolean): void {
+    if (!this.popoutWindow) {
+      return;
+    }
+
+    if (preserveSurfaceOpen && this.popoutSurface) {
+      this.suppressNextPopoutCloseForSurface = this.popoutSurface;
+    }
+
+    const popoutWindow = this.popoutWindow;
+    this.popoutWindow = null;
+    this.popoutSurface = null;
+    popoutWindow.close();
+  }
+
+  private layoutPopoutWindow(): void {
+    if (!this.popoutWindow || !this.popoutSurface) {
+      return;
+    }
+
+    const view = this.getPanelView(this.popoutSurface);
+    if (!view) {
+      return;
+    }
+
+    const [width, height] = this.popoutWindow.getContentSize();
+    view.setBounds({
+      x: 0,
+      y: 0,
+      width,
+      height,
+    });
+  }
+
+  private closePanelSurface(surface: PanelSurfaceId): void {
+    switch (surface) {
+      case 'feedback':
+        this.closeFeedbackPanel();
+        return;
+      case 'style':
+        this.closeStylePanel();
+        return;
+      case 'markdown':
+        void this.closeMarkdownPanel();
+        return;
+      case 'mcp':
+        this.closeMcpPanel();
+        return;
+      case 'project':
+        this.closeProjectPanel();
+        return;
+    }
+  }
+
+  private async updatePanelPresentation(
+    surface: PanelSurfaceId,
+    mode: PanelPresentationMode,
+    side?: PanelSidebarSide,
+  ): Promise<void> {
+    const nextState = await this.projectAppearance.setAppearance({
+      panelPreferences: {
+        [surface]: normalizePanelPresentationPreference({
+          mode,
+          side,
+        }),
+      } as Partial<ChromeAppearanceState['panelPreferences']>,
+    });
+
+    this.chromeAppearanceState = {
+      ...this.mergeChromeAppearanceDiagnostics(nextState),
+      isOpen: this.chromeAppearanceState.isOpen,
+    };
+    this.applyChromeAppearance();
+    if (this.isPanelOpen(surface)) {
+      this.ensurePanelHosted(surface);
+      this.layoutViews();
+    }
+    this.sendChromeAppearanceState();
   }
 
   isWindowFocused(): boolean {
@@ -728,6 +1099,10 @@ export class BrowserShell {
         return this.markdownViewState.isOpen
           ? this.closeMarkdownPanel()
           : this.openMarkdownPanel();
+      case 'setPresentation':
+        await this.updatePanelPresentation('markdown', command.mode, command.side);
+        this.sendMarkdownViewState();
+        return this.getMarkdownViewState();
       case 'refresh':
         return this.refreshMarkdownView(command.force ?? true);
       default:
@@ -747,6 +1122,10 @@ export class BrowserShell {
         return this.closeMcpPanel();
       case 'toggle':
         return this.mcpViewState.isOpen ? this.closeMcpPanel() : this.openMcpPanel();
+      case 'setPresentation':
+        await this.updatePanelPresentation('mcp', command.mode, command.side);
+        this.sendMcpViewState();
+        return this.getMcpViewState();
       case 'refresh':
         this.syncMcpViewState();
         return this.getMcpViewState();
@@ -774,6 +1153,10 @@ export class BrowserShell {
         return this.closeStylePanel();
       case 'toggle':
         return this.styleViewState.isOpen ? this.closeStylePanel() : this.openStylePanel();
+      case 'setPresentation':
+        await this.updatePanelPresentation('style', command.mode, command.side);
+        this.sendStyleViewState();
+        return this.getStyleViewState();
       case 'startInspectionFromSelection':
         return this.startStyleInspection(command.selection);
       case 'refreshInspection':
@@ -799,6 +1182,10 @@ export class BrowserShell {
         return this.openProjectPanel();
       case 'close':
         return this.closeProjectPanel();
+      case 'setPresentation':
+        await this.updatePanelPresentation('project', command.mode, command.side);
+        this.sendChromeAppearanceState();
+        return this.getChromeAppearanceState();
       case 'selectProject': {
         const nextState = await this.promptForProjectFolder();
         this.chromeAppearanceState = {
@@ -852,6 +1239,10 @@ export class BrowserShell {
         return this.closeFeedbackPanel();
       case 'toggle':
         return this.feedbackState.isOpen ? this.closeFeedbackPanel() : this.openFeedbackPanel();
+      case 'setPresentation':
+        await this.updatePanelPresentation('feedback', command.mode, command.side);
+        this.sendFeedbackState();
+        return this.getFeedbackState();
       case 'clearDraft':
         this.feedbackState = {
           ...this.feedbackState,
@@ -1505,19 +1896,9 @@ export class BrowserShell {
     }
 
     const contentHeight = Math.max(height - CHROME_HEIGHT, 0);
-    const activeSidePanel = this.getActiveSidePanel();
-    const activeSidePanelView =
-      activeSidePanel === 'feedback'
-        ? this.feedbackPanelView
-        : activeSidePanel === 'markdown'
-        ? this.markdownPanelView
-        : activeSidePanel === 'mcp'
-          ? this.mcpPanelView
-          : activeSidePanel === 'project'
-            ? this.projectPanelView
-            : activeSidePanel === 'style'
-              ? this.stylePanelView
-          : null;
+    const activeSurface = this.getMainWindowPanelSurface();
+    const activeView = activeSurface ? this.getPanelView(activeSurface) : null;
+    const activePresentation = activeSurface ? this.getPanelPresentation(activeSurface) : null;
 
     this.uiView.setBounds({
       x: 0,
@@ -1526,7 +1907,7 @@ export class BrowserShell {
       height: CHROME_HEIGHT,
     });
 
-    if (activeSidePanelView) {
+    if (activeView && activePresentation?.mode === 'sidebar') {
       if (width < SIDE_PANEL_BREAKPOINT) {
         this.pageView.setBounds({
           x: 0,
@@ -1534,7 +1915,7 @@ export class BrowserShell {
           width: 0,
           height: 0,
         });
-        activeSidePanelView.setBounds({
+        activeView.setBounds({
           x: 0,
           y: CHROME_HEIGHT,
           width,
@@ -1545,17 +1926,63 @@ export class BrowserShell {
 
       const panelWidth = Math.min(SIDE_PANEL_WIDTH, width);
       const pageWidth = Math.max(width - panelWidth, 0);
+      const side = activePresentation.side === 'left' ? 'left' : 'right';
+
+      if (side === 'left') {
+        activeView.setBounds({
+          x: 0,
+          y: CHROME_HEIGHT,
+          width: panelWidth,
+          height: contentHeight,
+        });
+        this.pageView.setBounds({
+          x: panelWidth,
+          y: CHROME_HEIGHT,
+          width: pageWidth,
+          height: contentHeight,
+        });
+      } else {
+        this.pageView.setBounds({
+          x: 0,
+          y: CHROME_HEIGHT,
+          width: pageWidth,
+          height: contentHeight,
+        });
+        activeView.setBounds({
+          x: pageWidth,
+          y: CHROME_HEIGHT,
+          width: panelWidth,
+          height: contentHeight,
+        });
+      }
+      return;
+    }
+
+    if (activeView && activePresentation?.mode === 'floating-pill') {
       this.pageView.setBounds({
         x: 0,
         y: CHROME_HEIGHT,
-        width: pageWidth,
+        width,
         height: contentHeight,
       });
-      activeSidePanelView.setBounds({
-        x: pageWidth,
-        y: CHROME_HEIGHT,
+
+      const availableWidth = Math.max(width - FLOATING_PILL_MARGIN * 2, 0);
+      const availableHeight = Math.max(contentHeight - FLOATING_PILL_MARGIN * 2, 0);
+      const panelWidth = Math.max(
+        Math.min(FLOATING_PILL_MAX_WIDTH, availableWidth),
+        Math.min(FLOATING_PILL_MIN_WIDTH, availableWidth),
+      );
+      const panelHeight = Math.min(FLOATING_PILL_MAX_HEIGHT, availableHeight);
+      const panelX = Math.max(Math.round((width - panelWidth) / 2), FLOATING_PILL_MARGIN);
+      const panelY =
+        CHROME_HEIGHT +
+        Math.max(contentHeight - panelHeight - FLOATING_PILL_MARGIN, FLOATING_PILL_MARGIN);
+
+      activeView.setBounds({
+        x: panelX,
+        y: panelY,
         width: panelWidth,
-        height: contentHeight,
+        height: panelHeight,
       });
       return;
     }
@@ -2547,10 +2974,7 @@ export class BrowserShell {
   }
 
   private closeFeedbackPanel(notify = true): FeedbackState {
-    if (this.window && this.feedbackPanelView && this.feedbackPanelMounted) {
-      this.window.contentView.removeChildView(this.feedbackPanelView);
-      this.feedbackPanelMounted = false;
-    }
+    this.detachPanelSurface('feedback');
 
     this.feedbackState = {
       ...this.feedbackState,
@@ -2565,18 +2989,11 @@ export class BrowserShell {
   }
 
   private ensureFeedbackPanelMounted(): void {
-    if (!this.window) {
-      throw new Error('Window is not ready.');
-    }
-
     if (!this.feedbackPanelView) {
       this.feedbackPanelView = this.createTrustedView('feedback');
     }
 
-    if (!this.feedbackPanelMounted) {
-      this.window.contentView.addChildView(this.feedbackPanelView);
-      this.feedbackPanelMounted = true;
-    }
+    this.ensurePanelHosted('feedback');
   }
 
   private async openStylePanel(): Promise<StyleViewState> {
@@ -2605,10 +3022,7 @@ export class BrowserShell {
   }
 
   private closeStylePanel(notify = true): StyleViewState {
-    if (this.window && this.stylePanelView && this.stylePanelMounted) {
-      this.window.contentView.removeChildView(this.stylePanelView);
-      this.stylePanelMounted = false;
-    }
+    this.detachPanelSurface('style');
 
     this.styleViewState = {
       ...this.styleViewState,
@@ -2622,18 +3036,11 @@ export class BrowserShell {
   }
 
   private ensureStylePanelMounted(): void {
-    if (!this.window) {
-      throw new Error('Window is not ready.');
-    }
-
     if (!this.stylePanelView) {
       this.stylePanelView = this.createTrustedView('style');
     }
 
-    if (!this.stylePanelMounted) {
-      this.window.contentView.addChildView(this.stylePanelView);
-      this.stylePanelMounted = true;
-    }
+    this.ensurePanelHosted('style');
   }
 
   private async openMarkdownPanel(): Promise<MarkdownViewState> {
@@ -2660,10 +3067,7 @@ export class BrowserShell {
   }
 
   private closeMarkdownPanel(notify = true): MarkdownViewState {
-    if (this.window && this.markdownPanelView && this.markdownPanelMounted) {
-      this.window.contentView.removeChildView(this.markdownPanelView);
-      this.markdownPanelMounted = false;
-    }
+    this.detachPanelSurface('markdown');
 
     this.markdownViewState = {
       ...this.markdownViewState,
@@ -2677,18 +3081,11 @@ export class BrowserShell {
   }
 
   private ensureMarkdownPanelMounted(): void {
-    if (!this.window) {
-      throw new Error('Window is not ready.');
-    }
-
     if (!this.markdownPanelView) {
       this.markdownPanelView = this.createTrustedView('markdown');
     }
 
-    if (!this.markdownPanelMounted) {
-      this.window.contentView.addChildView(this.markdownPanelView);
-      this.markdownPanelMounted = true;
-    }
+    this.ensurePanelHosted('markdown');
   }
 
   private openMcpPanel(): McpViewState {
@@ -2711,10 +3108,7 @@ export class BrowserShell {
   }
 
   private closeMcpPanel(notify = true): McpViewState {
-    if (this.window && this.mcpPanelView && this.mcpPanelMounted) {
-      this.window.contentView.removeChildView(this.mcpPanelView);
-      this.mcpPanelMounted = false;
-    }
+    this.detachPanelSurface('mcp');
 
     this.mcpViewState = {
       ...this.mcpViewState,
@@ -2728,18 +3122,11 @@ export class BrowserShell {
   }
 
   private ensureMcpPanelMounted(): void {
-    if (!this.window) {
-      throw new Error('Window is not ready.');
-    }
-
     if (!this.mcpPanelView) {
       this.mcpPanelView = this.createTrustedView('mcp');
     }
 
-    if (!this.mcpPanelMounted) {
-      this.window.contentView.addChildView(this.mcpPanelView);
-      this.mcpPanelMounted = true;
-    }
+    this.ensurePanelHosted('mcp');
   }
 
   private openProjectPanel(): ChromeAppearanceState {
@@ -2762,10 +3149,7 @@ export class BrowserShell {
   }
 
   private closeProjectPanel(notify = true): ChromeAppearanceState {
-    if (this.window && this.projectPanelView && this.projectPanelMounted) {
-      this.window.contentView.removeChildView(this.projectPanelView);
-      this.projectPanelMounted = false;
-    }
+    this.detachPanelSurface('project');
 
     this.chromeAppearanceState = {
       ...this.chromeAppearanceState,
@@ -2812,23 +3196,20 @@ export class BrowserShell {
   }
 
   private ensureProjectPanelMounted(): void {
-    if (!this.window) {
-      throw new Error('Window is not ready.');
-    }
-
     if (!this.projectPanelView) {
       this.projectPanelView = this.createTrustedView('project');
     }
 
-    if (!this.projectPanelMounted) {
-      this.window.contentView.addChildView(this.projectPanelView);
-      this.projectPanelMounted = true;
-    }
+    this.ensurePanelHosted('project');
   }
 
   private applyChromeAppearance(): void {
     if (this.window && !this.window.isDestroyed()) {
       this.window.setBackgroundColor(this.chromeAppearanceState.chromeColor);
+    }
+
+    if (this.popoutWindow && !this.popoutWindow.isDestroyed()) {
+      this.popoutWindow.setBackgroundColor(this.chromeAppearanceState.chromeColor);
     }
 
     this.sendChromeAppearanceState();
@@ -3069,30 +3450,6 @@ export class BrowserShell {
     }
 
     return snapshot;
-  }
-
-  private getActiveSidePanel(): SidePanelKind | null {
-    if (this.feedbackState.isOpen && this.feedbackPanelView && this.feedbackPanelMounted) {
-      return 'feedback';
-    }
-
-    if (this.styleViewState.isOpen && this.stylePanelView && this.stylePanelMounted) {
-      return 'style';
-    }
-
-    if (this.mcpViewState.isOpen && this.mcpPanelView && this.mcpPanelMounted) {
-      return 'mcp';
-    }
-
-    if (this.chromeAppearanceState.isOpen && this.projectPanelView && this.projectPanelMounted) {
-      return 'project';
-    }
-
-    if (this.markdownViewState.isOpen && this.markdownPanelView && this.markdownPanelMounted) {
-      return 'markdown';
-    }
-
-    return null;
   }
 
   private getConfiguredAgentLoginOrigin(): string | null {
@@ -3469,6 +3826,15 @@ export class BrowserShell {
 
   private destroyWindow(): void {
     this.rejectPendingStyleRequests('Loop Browser closed the current window.');
+    if (this.popoutWindow) {
+      if (this.popoutSurface) {
+        this.suppressNextPopoutCloseForSurface = this.popoutSurface;
+      }
+      const popoutWindow = this.popoutWindow;
+      this.popoutWindow = null;
+      this.popoutSurface = null;
+      popoutWindow.close();
+    }
     this.closeManagedView(this.feedbackPanelView);
     this.closeManagedView(this.mcpPanelView);
     this.closeManagedView(this.projectPanelView);
@@ -3488,6 +3854,7 @@ export class BrowserShell {
     this.projectPanelMounted = false;
     this.markdownPanelMounted = false;
     this.stylePanelMounted = false;
+    this.suppressNextPopoutCloseForSurface = null;
     this.window = null;
   }
 

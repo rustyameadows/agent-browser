@@ -1,3 +1,13 @@
+import {
+  createDefaultPanelPresentationPreferences,
+  isPanelPresentationMode,
+  isPanelPresentationPreferences,
+  isPanelSidebarSide,
+  type PanelPresentationMode,
+  type PanelPresentationPreferences,
+  type PanelSidebarSide,
+} from './panel-presentation';
+
 export const CHROME_APPEARANCE_COMMAND_CHANNEL = 'chrome-appearance:command';
 export const CHROME_APPEARANCE_GET_STATE_CHANNEL = 'chrome-appearance:get-state';
 export const CHROME_APPEARANCE_STATE_CHANNEL = 'chrome-appearance:state';
@@ -8,7 +18,14 @@ export const DEFAULT_ACCENT_COLOR = '#0A84FF';
 export const chromeDockIconStatuses = ['idle', 'applied', 'failed'] as const;
 export const chromeDockIconSources = ['chromeColor', 'projectIcon'] as const;
 
-export const chromeAppearanceActions = ['open', 'close', 'set', 'reset', 'selectProject'] as const;
+export const chromeAppearanceActions = [
+  'open',
+  'close',
+  'set',
+  'reset',
+  'selectProject',
+  'setPresentation',
+] as const;
 
 export type ChromeAppearanceAction = (typeof chromeAppearanceActions)[number];
 export type ChromeDockIconStatus = (typeof chromeDockIconStatuses)[number];
@@ -18,6 +35,7 @@ export interface ChromeAppearanceState {
   isOpen: boolean;
   projectRoot: string;
   configPath: string;
+  panelPreferences: PanelPresentationPreferences;
   chromeColor: string;
   accentColor: string;
   projectIconPath: string;
@@ -39,6 +57,11 @@ export type ChromeAppearanceCommand =
       action: 'open' | 'close' | 'reset' | 'selectProject';
     }
   | {
+      action: 'setPresentation';
+      mode: PanelPresentationMode;
+      side?: PanelSidebarSide;
+    }
+  | {
       action: 'set';
       chromeColor?: string;
       accentColor?: string;
@@ -58,6 +81,7 @@ export const createEmptyChromeAppearanceState = (): ChromeAppearanceState => ({
   isOpen: false,
   projectRoot: '',
   configPath: '',
+  panelPreferences: createDefaultPanelPresentationPreferences(),
   chromeColor: DEFAULT_CHROME_COLOR,
   accentColor: DEFAULT_ACCENT_COLOR,
   projectIconPath: '',
@@ -83,6 +107,7 @@ export const isChromeAppearanceState = (value: unknown): value is ChromeAppearan
     typeof value.isOpen === 'boolean' &&
     typeof value.projectRoot === 'string' &&
     typeof value.configPath === 'string' &&
+    isPanelPresentationPreferences(value.panelPreferences) &&
     isHexColor(value.chromeColor) &&
     isHexColor(value.accentColor) &&
     typeof value.projectIconPath === 'string' &&
@@ -123,7 +148,14 @@ export const isChromeAppearanceCommand = (value: unknown): value is ChromeAppear
         !('projectIconPath' in value) &&
         !('defaultUrl' in value) &&
         !('agentLoginUsernameEnv' in value) &&
-        !('agentLoginPasswordEnv' in value)
+        !('agentLoginPasswordEnv' in value) &&
+        !('mode' in value) &&
+        !('side' in value)
+      );
+    case 'setPresentation':
+      return (
+        isPanelPresentationMode(value.mode) &&
+        (!('side' in value) || value.side === undefined || isPanelSidebarSide(value.side))
       );
     case 'set':
       return (
@@ -135,6 +167,8 @@ export const isChromeAppearanceCommand = (value: unknown): value is ChromeAppear
           typeof value.agentLoginUsernameEnv === 'string') &&
         (!('agentLoginPasswordEnv' in value) ||
           typeof value.agentLoginPasswordEnv === 'string') &&
+        !('mode' in value) &&
+        !('side' in value) &&
         ('chromeColor' in value ||
           'accentColor' in value ||
           'projectIconPath' in value ||

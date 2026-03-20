@@ -1,8 +1,21 @@
+import {
+  isPanelPresentationMode,
+  isPanelSidebarSide,
+  type PanelPresentationMode,
+  type PanelSidebarSide,
+} from './panel-presentation';
+
 export const MARKDOWN_VIEW_COMMAND_CHANNEL = 'markdown-view:command';
 export const MARKDOWN_VIEW_GET_STATE_CHANNEL = 'markdown-view:get-state';
 export const MARKDOWN_VIEW_STATE_CHANNEL = 'markdown-view:state';
 
-export const markdownViewActions = ['open', 'close', 'refresh', 'toggle'] as const;
+export const markdownViewActions = [
+  'open',
+  'close',
+  'refresh',
+  'toggle',
+  'setPresentation',
+] as const;
 export const markdownViewStatuses = ['idle', 'loading', 'ready', 'error'] as const;
 
 export type MarkdownViewAction = (typeof markdownViewActions)[number];
@@ -11,6 +24,11 @@ export type MarkdownViewStatus = (typeof markdownViewStatuses)[number];
 export type MarkdownViewCommand =
   | {
       action: 'open';
+    }
+  | {
+      action: 'setPresentation';
+      mode: PanelPresentationMode;
+      side?: PanelSidebarSide;
     }
   | {
       action: 'close';
@@ -61,6 +79,13 @@ export const isMarkdownViewCommand = (value: unknown): value is MarkdownViewComm
 
   if (value.action === 'refresh') {
     return !('force' in value) || typeof value.force === 'boolean';
+  }
+
+  if (value.action === 'setPresentation') {
+    return (
+      isPanelPresentationMode(value.mode) &&
+      (!('side' in value) || value.side === undefined || isPanelSidebarSide(value.side))
+    );
   }
 
   return !('force' in value) || value.force === undefined;

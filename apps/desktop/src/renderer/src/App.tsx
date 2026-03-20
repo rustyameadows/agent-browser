@@ -24,6 +24,10 @@ import {
   type MarkdownViewState,
   type NavigationCommand,
   type NavigationState,
+  type PanelPresentationMode,
+  type PanelPresentationPreference,
+  type PanelSidebarSide,
+  type PanelSurfaceId,
   type PickerCommand,
   type PickerState,
   type ProjectAgentLoginState,
@@ -64,6 +68,49 @@ const emptyStyleState = createEmptyStyleViewState();
 const AGENT_DONE_PULSE_MS = 1600;
 
 type SurfaceMode = 'chrome' | 'launcher' | 'markdown' | 'mcp' | 'feedback' | 'project' | 'style';
+type PanelPresentationSelectValue =
+  | 'sidebar-right'
+  | 'sidebar-left'
+  | 'floating-pill'
+  | 'popout';
+
+const panelSurfaceLabels: Record<PanelSurfaceId, string> = {
+  feedback: 'Agent',
+  style: 'Style',
+  markdown: 'Markdown',
+  mcp: 'MCP',
+  project: 'Project Settings',
+};
+
+const panelPresentationOptions: Array<{
+  value: PanelPresentationSelectValue;
+  label: string;
+  mode: PanelPresentationMode;
+  side?: PanelSidebarSide;
+}> = [
+  {
+    value: 'sidebar-right',
+    label: 'Sidebar Right',
+    mode: 'sidebar',
+    side: 'right',
+  },
+  {
+    value: 'sidebar-left',
+    label: 'Sidebar Left',
+    mode: 'sidebar',
+    side: 'left',
+  },
+  {
+    value: 'floating-pill',
+    label: 'Floating Pill',
+    mode: 'floating-pill',
+  },
+  {
+    value: 'popout',
+    label: 'Pop Out Window',
+    mode: 'popout',
+  },
+];
 
 type IconName =
   | 'arrowUpRight'
@@ -136,6 +183,42 @@ const getSelectionMeta = (selection: ElementDescriptor): string => {
 
   return summaryParts.join(' | ');
 };
+
+const getPanelPresentationSelectValue = (
+  presentation: PanelPresentationPreference,
+): PanelPresentationSelectValue => {
+  if (presentation.mode === 'sidebar') {
+    return presentation.side === 'left' ? 'sidebar-left' : 'sidebar-right';
+  }
+
+  return presentation.mode;
+};
+
+const getPanelPresentationLabel = (presentation: PanelPresentationPreference): string =>
+  panelPresentationOptions.find((option) => option.value === getPanelPresentationSelectValue(presentation))
+    ?.label ?? 'Sidebar Right';
+
+const getPanelPresentationOption = (
+  value: PanelPresentationSelectValue,
+): {
+  mode: PanelPresentationMode;
+  side?: PanelSidebarSide;
+} =>
+  panelPresentationOptions.find((option) => option.value === value) ?? panelPresentationOptions[0];
+
+const getPanelToolbarLabel = (
+  surface: PanelSurfaceId,
+  presentation: PanelPresentationPreference,
+  isOpen: boolean,
+): string => {
+  const action = isOpen ? 'Close' : 'Open';
+  return `${action} ${panelSurfaceLabels[surface]} (${getPanelPresentationLabel(presentation)})`;
+};
+
+const getPanelHostAttributes = (presentation: PanelPresentationPreference): Record<string, string> => ({
+  'data-panel-host': presentation.mode,
+  'data-panel-side': presentation.mode === 'sidebar' ? presentation.side ?? 'right' : 'none',
+});
 
 type StyleControlDefinition = {
   property: string;
@@ -628,6 +711,31 @@ const ChromeIcon = ({
   }
 };
 
+const SurfacePresentationControl = ({
+  presentation,
+  onChange,
+}: {
+  presentation: PanelPresentationPreference;
+  onChange(next: { mode: PanelPresentationMode; side?: PanelSidebarSide }): void;
+}): JSX.Element => (
+  <label className="surfacePresentationControl">
+    <span className="surfacePresentationControl__label">Display</span>
+    <select
+      className="surfacePresentationControl__select"
+      onChange={(event) =>
+        onChange(getPanelPresentationOption(event.target.value as PanelPresentationSelectValue))
+      }
+      value={getPanelPresentationSelectValue(presentation)}
+    >
+      {panelPresentationOptions.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  </label>
+);
+
 const useNavigationState = (): NavigationState => {
   const [navigationState, setNavigationState] = useState<NavigationState>(emptyState);
 
@@ -1049,6 +1157,7 @@ const ProjectBar = ({
     sessionState.currentSessionId;
   const projectButtonLabel =
     sessionState.role === 'project-session' ? 'Open another project' : 'Open project';
+  const projectPresentation = chromeAppearanceState.panelPreferences.project;
 
   return (
     <section aria-label="Open projects" className="shell__projectBar">
@@ -1132,14 +1241,17 @@ const ProjectBar = ({
 
       <div className="shell__projectBarActions">
         <button
-          aria-label={
-            chromeAppearanceState.isOpen ? 'Close project settings' : 'Open project settings'
-          }
+          aria-label={getPanelToolbarLabel(
+            'project',
+            projectPresentation,
+            chromeAppearanceState.isOpen,
+          )}
           aria-pressed={chromeAppearanceState.isOpen}
           className={`shell__pillButton shell__pillButton--project${
             chromeAppearanceState.isOpen ? ' shell__pillButton--projectActive' : ''
           }`}
           onClick={onToggleProjectSettings}
+          title={getPanelToolbarLabel('project', projectPresentation, chromeAppearanceState.isOpen)}
           type="button"
         >
           <span>Project Settings</span>
@@ -1336,11 +1448,10 @@ const ChromeSurface = ({
     });
   };
 
-  const mcpButtonAriaLabel = mcpPresence.isBusy
-    ? `MCP is busy${mcpPresence.message ? `: ${mcpPresence.message}` : ''}`
-    : mcpPresence.isDonePulse
-      ? `MCP updated${mcpPresence.message ? `: ${mcpPresence.message}` : ''}`
-      : `MCP: ${mcpViewState.statusLabel}`;
+  const markdownPresentation = chromeAppearanceState.panelPreferences.markdown;
+  const stylePresentation = chromeAppearanceState.panelPreferences.style;
+  const feedbackPresentation = chromeAppearanceState.panelPreferences.feedback;
+  const mcpPresentation = chromeAppearanceState.panelPreferences.mcp;
   const agentLoginButtonTitle =
     navigationState.agentLoginCta.reason ??
     'Fill the detected login form with the configured agent login.';
@@ -1429,9 +1540,11 @@ const ChromeSurface = ({
               <ChromeIcon className="shell__icon" name="crosshair" />
             </button>
             <button
-              aria-label={
-                markdownViewState.isOpen ? 'Close Markdown view' : 'View page as Markdown'
-              }
+              aria-label={getPanelToolbarLabel(
+                'markdown',
+                markdownPresentation,
+                markdownViewState.isOpen,
+              )}
               aria-pressed={markdownViewState.isOpen}
               className={`shell__navButton shell__navButton--md${
                 markdownViewState.isOpen ? ' shell__navButton--mdActive' : ''
@@ -1442,7 +1555,11 @@ const ChromeSurface = ({
                   action: markdownViewState.isOpen ? 'close' : 'open',
                 })
               }
-              title="View page as Markdown"
+              title={getPanelToolbarLabel(
+                'markdown',
+                markdownPresentation,
+                markdownViewState.isOpen,
+              )}
               type="button"
             >
               <ChromeIcon className="shell__icon" name="book" />
@@ -1460,7 +1577,7 @@ const ChromeSurface = ({
               </button>
             ) : null}
             <button
-              aria-label={styleViewState.isOpen ? 'Close style panel' : 'Open style panel'}
+              aria-label={getPanelToolbarLabel('style', stylePresentation, styleViewState.isOpen)}
               aria-pressed={styleViewState.isOpen}
               className={`shell__pillButton shell__pillButton--style${
                 styleViewState.isOpen ? ' shell__pillButton--styleActive' : ''
@@ -1470,14 +1587,17 @@ const ChromeSurface = ({
                   action: styleViewState.isOpen ? 'close' : 'open',
                 })
               }
+              title={getPanelToolbarLabel('style', stylePresentation, styleViewState.isOpen)}
               type="button"
             >
               <span>Style</span>
             </button>
             <button
-              aria-label={
-                feedbackState.isOpen ? 'Close agent panel' : 'Open agent panel'
-              }
+              aria-label={getPanelToolbarLabel(
+                'feedback',
+                feedbackPresentation,
+                feedbackState.isOpen,
+              )}
               aria-pressed={feedbackState.isOpen}
               className={`shell__pillButton shell__pillButton--agent${
                 feedbackState.isOpen ? ' shell__pillButton--agentActive' : ''
@@ -1487,12 +1607,19 @@ const ChromeSurface = ({
                   action: feedbackState.isOpen ? 'close' : 'open',
                 })
               }
+              title={getPanelToolbarLabel(
+                'feedback',
+                feedbackPresentation,
+                feedbackState.isOpen,
+              )}
               type="button"
             >
               <span>Agent</span>
             </button>
             <button
-              aria-label={mcpButtonAriaLabel}
+              aria-label={`${getPanelToolbarLabel('mcp', mcpPresentation, mcpViewState.isOpen)}${
+                mcpPresence.message ? `: ${mcpPresence.message}` : ''
+              }`}
               aria-pressed={mcpViewState.isOpen}
               className={`shell__pillButton shell__pillButton--mcp${
                 mcpViewState.isOpen ? ' shell__pillButton--mcpActive' : ''
@@ -1504,7 +1631,9 @@ const ChromeSurface = ({
                   action: mcpViewState.isOpen ? 'close' : 'open',
                 })
               }
-              title={mcpPresence.message ?? mcpViewState.statusLabel}
+              title={`${getPanelToolbarLabel('mcp', mcpPresentation, mcpViewState.isOpen)}${
+                mcpPresence.message ? `: ${mcpPresence.message}` : `: ${mcpViewState.statusLabel}`
+              }`}
               type="button"
             >
               <span>MCP</span>
@@ -1518,8 +1647,10 @@ const ChromeSurface = ({
 
 const MarkdownSurface = (): JSX.Element => {
   const markdownViewState = useMarkdownViewState();
+  const chromeAppearanceState = useChromeAppearanceState();
   const [copyFeedback, setCopyFeedback] = useState('Copy Markdown');
   const copyTimerRef = useRef<number | null>(null);
+  const presentation = chromeAppearanceState.panelPreferences.markdown;
 
   useEffect(() => {
     return () => {
@@ -1552,10 +1683,22 @@ const MarkdownSurface = (): JSX.Element => {
   };
 
   return (
-    <main className="markdownSurface">
+    <main className="markdownSurface" {...getPanelHostAttributes(presentation)}>
       <section className="markdownSurface__panel">
         <header className="markdownSurface__header">
           <div className="markdownSurface__eyebrow">View Page As MD</div>
+          <div className="surfaceHeaderControls">
+            <SurfacePresentationControl
+              onChange={(next) =>
+                void runMarkdownCommand({
+                  action: 'setPresentation',
+                  mode: next.mode,
+                  side: next.side,
+                })
+              }
+              presentation={presentation}
+            />
+          </div>
           <button
             aria-label="Close Markdown view"
             className="markdownSurface__iconButton"
@@ -1622,9 +1765,11 @@ const MarkdownSurface = (): JSX.Element => {
 
 const McpSurface = (): JSX.Element => {
   const mcpViewState = useMcpViewState();
+  const chromeAppearanceState = useChromeAppearanceState();
   const mcpPresence = useMcpPresence(mcpViewState);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const copyTimerRef = useRef<number | null>(null);
+  const presentation = chromeAppearanceState.panelPreferences.mcp;
 
   useEffect(() => {
     return () => {
@@ -1674,10 +1819,22 @@ const McpSurface = (): JSX.Element => {
   };
 
   return (
-    <main className="mcpSurface">
+    <main className="mcpSurface" {...getPanelHostAttributes(presentation)}>
       <section className="mcpSurface__panel">
         <header className="mcpSurface__header">
           <div className="mcpSurface__eyebrow">MCP Diagnostics</div>
+          <div className="surfaceHeaderControls">
+            <SurfacePresentationControl
+              onChange={(next) =>
+                void runMcpCommand({
+                  action: 'setPresentation',
+                  mode: next.mode,
+                  side: next.side,
+                })
+              }
+              presentation={presentation}
+            />
+          </div>
           <button
             aria-label="Close MCP diagnostics"
             className="mcpSurface__iconButton"
@@ -2190,10 +2347,25 @@ const ProjectSurface = ({
         : 'Save a repo-local agent login below to enable Use Agent Login on matching login pages.';
 
   return (
-    <main className="projectSurface">
+    <main
+      className="projectSurface"
+      {...getPanelHostAttributes(chromeAppearanceState.panelPreferences.project)}
+    >
       <section className="projectSurface__panel">
         <header className="projectSurface__header">
           <div className="projectSurface__eyebrow">Project Settings</div>
+          <div className="surfaceHeaderControls">
+            <SurfacePresentationControl
+              onChange={(next) =>
+                void runChromeAppearanceCommand({
+                  action: 'setPresentation',
+                  mode: next.mode,
+                  side: next.side,
+                })
+              }
+              presentation={chromeAppearanceState.panelPreferences.project}
+            />
+          </div>
           <button
             aria-label="Close project settings"
             className="projectSurface__iconButton"
@@ -2668,9 +2840,11 @@ const ProjectSurface = ({
 
 const StyleSurface = (): JSX.Element => {
   const styleViewState = useStyleViewState();
+  const chromeAppearanceState = useChromeAppearanceState();
   const feedbackState = useFeedbackState();
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [rawCssDraft, setRawCssDraft] = useState('');
+  const presentation = chromeAppearanceState.panelPreferences.style;
 
   const linkedAnnotation =
     feedbackState.annotations.find((annotation) => annotation.id === styleViewState.linkedAnnotationId) ??
@@ -2735,10 +2909,22 @@ const StyleSurface = (): JSX.Element => {
   };
 
   return (
-    <main className="styleSurface">
+    <main className="styleSurface" {...getPanelHostAttributes(presentation)}>
       <section className="styleSurface__panel">
         <header className="styleSurface__header">
           <div className="styleSurface__eyebrow">Visual Style Overrides</div>
+          <div className="surfaceHeaderControls">
+            <SurfacePresentationControl
+              onChange={(next) =>
+                void runStyleCommand({
+                  action: 'setPresentation',
+                  mode: next.mode,
+                  side: next.side,
+                })
+              }
+              presentation={presentation}
+            />
+          </div>
           <button
             aria-label="Close style view"
             className="styleSurface__iconButton"
@@ -2985,10 +3171,12 @@ const StyleSurface = (): JSX.Element => {
 
 const FeedbackSurface = (): JSX.Element => {
   const feedbackState = useFeedbackState();
+  const chromeAppearanceState = useChromeAppearanceState();
   const navigationState = useNavigationState();
   const [summaryDraft, setSummaryDraft] = useState('');
   const [noteDraft, setNoteDraft] = useState('');
   const [replyDraft, setReplyDraft] = useState('');
+  const presentation = chromeAppearanceState.panelPreferences.feedback;
 
   const currentPageAnnotations = feedbackState.annotations.filter(
     (annotation) => annotation.url === navigationState.url,
@@ -3050,10 +3238,22 @@ const FeedbackSurface = (): JSX.Element => {
   };
 
   return (
-    <main className="feedbackSurface">
+    <main className="feedbackSurface" {...getPanelHostAttributes(presentation)}>
       <section className="feedbackSurface__panel">
         <header className="feedbackSurface__header">
           <div className="feedbackSurface__eyebrow">Selector Feedback Loop</div>
+          <div className="surfaceHeaderControls">
+            <SurfacePresentationControl
+              onChange={(next) =>
+                void runFeedbackCommand({
+                  action: 'setPresentation',
+                  mode: next.mode,
+                  side: next.side,
+                })
+              }
+              presentation={presentation}
+            />
+          </div>
           <button
             aria-label="Close feedback view"
             className="feedbackSurface__iconButton"

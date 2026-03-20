@@ -45,6 +45,9 @@ describe('style view protocol guards', () => {
       }),
     ).toBe(true);
     expect(
+      isStyleViewCommand({ action: 'setPresentation', mode: 'popout' }),
+    ).toBe(true);
+    expect(
       isStyleViewState({
         ...createEmptyStyleViewState(),
         isOpen: true,
@@ -109,6 +112,9 @@ describe('style view protocol guards', () => {
 
   it('rejects malformed style payloads', () => {
     expect(isStyleViewCommand({ action: 'setOverrideDeclaration', property: 'color' })).toBe(false);
+    expect(
+      isStyleViewCommand({ action: 'setPresentation', mode: 'sidebar', side: 'bottom' }),
+    ).toBe(false);
     expect(
       isStyleViewState({
         ...createEmptyStyleViewState(),

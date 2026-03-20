@@ -493,6 +493,96 @@ a {
   color: #15764f;
 }
 
+.surfaceHeaderControls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.surfacePresentationControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.surfacePresentationControl__label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.surfacePresentationControl__select {
+  min-width: 152px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.surfacePresentationControl__select:focus {
+  outline: 0;
+  border-color: rgba(var(--accent-rgb), 0.42);
+  box-shadow:
+    var(--shadow),
+    0 0 0 3px rgba(var(--accent-rgb), 0.12);
+}
+
+.markdownSurface[data-panel-host='sidebar'][data-panel-side='left'],
+.styleSurface[data-panel-host='sidebar'][data-panel-side='left'],
+.feedbackSurface[data-panel-host='sidebar'][data-panel-side='left'],
+.mcpSurface[data-panel-host='sidebar'][data-panel-side='left'],
+.projectSurface[data-panel-host='sidebar'][data-panel-side='left'] {
+  border-left: 0;
+  border-right: 1px solid rgba(214, 220, 229, 0.96);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.82);
+}
+
+.markdownSurface[data-panel-host='floating-pill'],
+.styleSurface[data-panel-host='floating-pill'],
+.feedbackSurface[data-panel-host='floating-pill'],
+.mcpSurface[data-panel-host='floating-pill'],
+.projectSurface[data-panel-host='floating-pill'] {
+  padding: 10px 10px 14px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.markdownSurface[data-panel-host='floating-pill'] .markdownSurface__panel,
+.styleSurface[data-panel-host='floating-pill'] .styleSurface__panel,
+.feedbackSurface[data-panel-host='floating-pill'] .feedbackSurface__panel,
+.mcpSurface[data-panel-host='floating-pill'] .mcpSurface__panel,
+.projectSurface[data-panel-host='floating-pill'] .projectSurface__panel {
+  padding: 16px;
+  border: 1px solid rgba(211, 218, 228, 0.9);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 255, 0.88));
+  box-shadow:
+    0 24px 60px rgba(25, 38, 57, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(18px);
+}
+
+.markdownSurface[data-panel-host='popout'],
+.styleSurface[data-panel-host='popout'],
+.feedbackSurface[data-panel-host='popout'],
+.mcpSurface[data-panel-host='popout'],
+.projectSurface[data-panel-host='popout'] {
+  border: 0;
+  box-shadow: none;
+}
+
 .shell__feedbackStatus {
   display: inline-flex;
   align-items: center;

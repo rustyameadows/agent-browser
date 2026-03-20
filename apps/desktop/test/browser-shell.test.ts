@@ -13,6 +13,7 @@ import {
   createEmptyStyleViewState,
   PAGE_PICKER_EVENT_CHANNEL,
   type ElementDescriptor,
+  type PanelSurfaceId,
   type StyleInspectionPayload,
 } from '@agent-browser/protocol';
 import { app, dialog, ipcMain, nativeImage } from 'electron';
@@ -44,7 +45,51 @@ vi.mock('node:child_process', () => ({
 }));
 
 vi.mock('electron', () => ({
-  BaseWindow: class {},
+  BaseWindow: class {
+    contentView = {
+      addChildView: vi.fn(),
+      removeChildView: vi.fn(),
+    };
+    private readonly listeners = new Map<string, Array<() => void>>();
+    private width: number;
+    private height: number;
+    private destroyed = false;
+
+    constructor(options: { width?: number; height?: number } = {}) {
+      this.width = options.width ?? 1280;
+      this.height = options.height ?? 720;
+    }
+
+    on(event: string, listener: () => void) {
+      const listeners = this.listeners.get(event) ?? [];
+      listeners.push(listener);
+      this.listeners.set(event, listeners);
+      return this;
+    }
+
+    close = vi.fn(() => {
+      this.listeners.get('close')?.forEach((listener) => listener());
+      this.destroyed = true;
+      this.listeners.get('closed')?.forEach((listener) => listener());
+    });
+
+    focus = vi.fn();
+    show = vi.fn();
+    setBackgroundColor = vi.fn();
+    isDestroyed = () => this.destroyed;
+    isFocused = () => true;
+    getContentSize = () => [this.width, this.height] as [number, number];
+    setContentSize = (width: number, height: number) => {
+      this.width = width;
+      this.height = height;
+      this.listeners.get('resize')?.forEach((listener) => listener());
+    };
+    setSize = (width: number, height: number) => {
+      this.setContentSize(width, height);
+    };
+    getBounds = () => ({ x: 0, y: 0, width: this.width, height: this.height });
+    getContentBounds = () => ({ x: 0, y: 0, width: this.width, height: this.height });
+  },
   WebContentsView: class {},
   app: {
     dock: {
@@ -171,6 +216,7 @@ const createProjectAppearanceRuntime = () => {
       defaultUrl?: string;
       agentLoginUsernameEnv?: string;
       agentLoginPasswordEnv?: string;
+      panelPreferences?: Partial<ReturnType<typeof createEmptyChromeAppearanceState>['panelPreferences']>;
     }) => {
       state = {
         ...state,
@@ -202,6 +248,10 @@ const createProjectAppearanceRuntime = () => {
             : update.projectIconPath
               ? path.join('/tmp/project', update.projectIconPath.replace(/^\.\//, ''))
               : null,
+        panelPreferences: {
+          ...state.panelPreferences,
+          ...update.panelPreferences,
+        },
       };
       return state;
     },
@@ -255,6 +305,16 @@ type BrowserShellHarness = {
   projectPanelMounted: boolean;
   projectPanelView: ReturnType<typeof createFakePanelView> | null;
   pickerState: ReturnType<typeof createEmptyPickerState>;
+  uiView: ReturnType<typeof createFakePanelView> | null;
+  popoutWindow: {
+    contentView: {
+      addChildView: ReturnType<typeof vi.fn>;
+      removeChildView: ReturnType<typeof vi.fn>;
+    };
+    close: ReturnType<typeof vi.fn>;
+    getContentSize: () => [number, number];
+  } | null;
+  popoutSurface: PanelSurfaceId | null;
 };
 
 const createSelection = (): ElementDescriptor => ({
@@ -506,6 +566,243 @@ describe('BrowserShell', () => {
     expect(shell.getMarkdownViewState().isOpen).toBe(false);
     expect(shell.getMcpViewState().isOpen).toBe(false);
     expect(shell.getChromeAppearanceState().isOpen).toBe(false);
+  });
+
+  it('opens a surface using its saved floating-pill presentation', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness;
+
+    subject.window = {
+      contentView: {
+        addChildView: vi.fn(),
+        removeChildView: vi.fn(),
+      },
+      getContentSize: () => [1280, 900],
+      focus: vi.fn(),
+      isDestroyed: () => false,
+      setBackgroundColor: vi.fn(),
+    } as BrowserShellHarness['window'];
+    subject.layoutViews = vi.fn();
+    subject.sendFeedbackState = vi.fn();
+    subject.sendStyleViewState = vi.fn();
+    subject.sendMarkdownViewState = vi.fn();
+    subject.sendMcpViewState = vi.fn();
+    subject.sendChromeAppearanceState = vi.fn();
+    subject.stylePanelView = createFakePanelView();
+    subject.chromeAppearanceState = {
+      ...createEmptyChromeAppearanceState(),
+      panelPreferences: {
+        ...createEmptyChromeAppearanceState().panelPreferences,
+        style: { mode: 'floating-pill' },
+      },
+    };
+
+    await shell.executeStyleViewCommand({ action: 'open' });
+
+    expect(shell.getStyleViewState().isOpen).toBe(true);
+    expect(subject.window?.contentView.addChildView).toHaveBeenCalledWith(subject.stylePanelView);
+    expect(subject.popoutWindow).toBeNull();
+  });
+
+  it('rehosts an open surface into a popout window when its presentation changes', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness;
+    const stylePanelView = createFakePanelView();
+
+    subject.window = {
+      contentView: {
+        addChildView: vi.fn(),
+        removeChildView: vi.fn(),
+      },
+      getContentSize: () => [1280, 900],
+      focus: vi.fn(),
+      isDestroyed: () => false,
+      setBackgroundColor: vi.fn(),
+    } as BrowserShellHarness['window'];
+    subject.layoutViews = vi.fn();
+    subject.sendChromeAppearanceState = vi.fn();
+    subject.sendStyleViewState = vi.fn();
+    subject.stylePanelView = stylePanelView;
+    subject.stylePanelMounted = true;
+    subject.styleViewState = {
+      ...createEmptyStyleViewState(),
+      isOpen: true,
+    };
+
+    await shell.executeStyleViewCommand({
+      action: 'setPresentation',
+      mode: 'popout',
+    });
+
+    expect(subject.window.contentView.removeChildView).toHaveBeenCalledWith(stylePanelView);
+    expect(subject.popoutSurface).toBe('style');
+    expect(subject.popoutWindow?.contentView.addChildView).toHaveBeenCalledWith(stylePanelView);
+    expect(shell.getChromeAppearanceState().panelPreferences.style).toEqual({ mode: 'popout' });
+  });
+
+  it('lays out sidebar surfaces on the configured side', () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness & {
+      layoutViews(): void;
+    };
+    const uiView = createFakePanelView();
+    const pageView = createFakePanelView();
+    const stylePanelView = createFakePanelView();
+
+    subject.window = {
+      contentView: {
+        addChildView: vi.fn(),
+        removeChildView: vi.fn(),
+      },
+      getContentSize: () => [1400, 920],
+    } as BrowserShellHarness['window'];
+    subject.uiView = uiView;
+    subject.pageView = pageView;
+    subject.stylePanelView = stylePanelView;
+    subject.stylePanelMounted = true;
+    subject.styleViewState = {
+      ...createEmptyStyleViewState(),
+      isOpen: true,
+    };
+    subject.chromeAppearanceState = {
+      ...createEmptyChromeAppearanceState(),
+      panelPreferences: {
+        ...createEmptyChromeAppearanceState().panelPreferences,
+        style: { mode: 'sidebar', side: 'left' },
+      },
+    };
+
+    subject.layoutViews();
+
+    expect(stylePanelView.setBounds).toHaveBeenLastCalledWith({
+      x: 0,
+      y: 98,
+      width: 460,
+      height: 822,
+    });
+    expect(pageView.setBounds).toHaveBeenLastCalledWith({
+      x: 460,
+      y: 98,
+      width: 940,
+      height: 822,
+    });
+
+    subject.chromeAppearanceState = {
+      ...subject.chromeAppearanceState,
+      panelPreferences: {
+        ...subject.chromeAppearanceState.panelPreferences,
+        style: { mode: 'sidebar', side: 'right' },
+      },
+    };
+
+    subject.layoutViews();
+
+    expect(pageView.setBounds).toHaveBeenLastCalledWith({
+      x: 0,
+      y: 98,
+      width: 940,
+      height: 822,
+    });
+    expect(stylePanelView.setBounds).toHaveBeenLastCalledWith({
+      x: 940,
+      y: 98,
+      width: 460,
+      height: 822,
+    });
+  });
+
+  it('lays out floating-pill surfaces as overlays without shrinking the page', () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness & {
+      layoutViews(): void;
+    };
+    const uiView = createFakePanelView();
+    const pageView = createFakePanelView();
+    const feedbackPanelView = createFakePanelView();
+
+    subject.window = {
+      contentView: {
+        addChildView: vi.fn(),
+        removeChildView: vi.fn(),
+      },
+      getContentSize: () => [1200, 900],
+    } as BrowserShellHarness['window'];
+    subject.uiView = uiView;
+    subject.pageView = pageView;
+    subject.feedbackPanelView = feedbackPanelView;
+    subject.feedbackPanelMounted = true;
+    subject.feedbackState = {
+      ...createEmptyFeedbackState(),
+      isOpen: true,
+    };
+    subject.chromeAppearanceState = {
+      ...createEmptyChromeAppearanceState(),
+      panelPreferences: {
+        ...createEmptyChromeAppearanceState().panelPreferences,
+        feedback: { mode: 'floating-pill' },
+      },
+    };
+
+    subject.layoutViews();
+
+    expect(pageView.setBounds).toHaveBeenLastCalledWith({
+      x: 0,
+      y: 98,
+      width: 1200,
+      height: 802,
+    });
+    expect(feedbackPanelView.setBounds).toHaveBeenLastCalledWith({
+      x: 240,
+      y: 196,
+      width: 720,
+      height: 680,
+    });
+  });
+
+  it('closes the popped out surface when the popout window closes', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness;
+    const feedbackPanelView = createFakePanelView();
+
+    subject.window = {
+      contentView: {
+        addChildView: vi.fn(),
+        removeChildView: vi.fn(),
+      },
+      getContentSize: () => [1280, 900],
+      focus: vi.fn(),
+      isDestroyed: () => false,
+      setBackgroundColor: vi.fn(),
+    } as BrowserShellHarness['window'];
+    subject.layoutViews = vi.fn();
+    subject.sendChromeAppearanceState = vi.fn();
+    subject.sendFeedbackState = vi.fn();
+    subject.feedbackPanelView = feedbackPanelView;
+    subject.feedbackPanelMounted = true;
+    subject.feedbackState = {
+      ...createEmptyFeedbackState(),
+      isOpen: true,
+    };
+
+    await shell.executeFeedbackCommand({
+      action: 'setPresentation',
+      mode: 'popout',
+    });
+
+    subject.popoutWindow?.close();
+
+    expect(shell.getFeedbackState().isOpen).toBe(false);
+    expect(subject.popoutWindow).toBeNull();
   });
 
   it('routes style picker selections into style inspection instead of feedback draft creation', () => {

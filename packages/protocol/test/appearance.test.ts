@@ -11,6 +11,9 @@ describe('isChromeAppearanceCommand', () => {
     expect(isChromeAppearanceCommand({ action: 'close' })).toBe(true);
     expect(isChromeAppearanceCommand({ action: 'reset' })).toBe(true);
     expect(isChromeAppearanceCommand({ action: 'selectProject' })).toBe(true);
+    expect(
+      isChromeAppearanceCommand({ action: 'setPresentation', mode: 'sidebar', side: 'left' }),
+    ).toBe(true);
   });
 
   it('accepts partial set commands', () => {
@@ -27,6 +30,9 @@ describe('isChromeAppearanceCommand', () => {
     expect(isChromeAppearanceCommand({ action: 'set' })).toBe(false);
     expect(isChromeAppearanceCommand({ action: 'set', chromeColor: 123 })).toBe(false);
     expect(isChromeAppearanceCommand({ action: 'toggle' })).toBe(false);
+    expect(
+      isChromeAppearanceCommand({ action: 'setPresentation', mode: 'sidebar', side: 'bottom' }),
+    ).toBe(false);
   });
 });
 
@@ -39,6 +45,12 @@ describe('isChromeAppearanceState', () => {
         configPath: '/tmp/project/.loop-browser.json',
         chromeColor: '#AABBCC',
         accentColor: '#112233',
+        panelPreferences: {
+          ...createEmptyChromeAppearanceState().panelPreferences,
+          markdown: {
+            mode: 'floating-pill',
+          },
+        },
         dockIconStatus: 'applied',
         dockIconSource: 'projectIcon',
       }),

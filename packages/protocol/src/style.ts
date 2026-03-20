@@ -1,4 +1,10 @@
 import { isElementDescriptor, type ElementDescriptor } from './navigation';
+import {
+  isPanelPresentationMode,
+  isPanelSidebarSide,
+  type PanelPresentationMode,
+  type PanelSidebarSide,
+} from './panel-presentation';
 
 export const STYLE_VIEW_COMMAND_CHANNEL = 'style-view:command';
 export const STYLE_VIEW_GET_STATE_CHANNEL = 'style-view:get-state';
@@ -10,6 +16,7 @@ export const styleViewActions = [
   'open',
   'close',
   'toggle',
+  'setPresentation',
   'startInspectionFromSelection',
   'refreshInspection',
   'setOverrideDeclaration',
@@ -88,6 +95,11 @@ export interface StyleViewState extends Omit<StyleInspectionPayload, 'selection'
 export type StyleViewCommand =
   | {
       action: 'open' | 'close' | 'toggle' | 'refreshInspection' | 'clearPreview';
+    }
+  | {
+      action: 'setPresentation';
+      mode: PanelPresentationMode;
+      side?: PanelSidebarSide;
     }
   | {
       action: 'startInspectionFromSelection';
@@ -255,6 +267,11 @@ export const isStyleViewCommand = (value: unknown): value is StyleViewCommand =>
     case 'refreshInspection':
     case 'clearPreview':
       return true;
+    case 'setPresentation':
+      return (
+        isPanelPresentationMode(value.mode) &&
+        (!('side' in value) || value.side === undefined || isPanelSidebarSide(value.side))
+      );
     case 'startInspectionFromSelection':
       return isElementDescriptor(value.selection);
     case 'setOverrideDeclaration':

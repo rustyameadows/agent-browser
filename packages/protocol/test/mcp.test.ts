@@ -10,6 +10,9 @@ describe('mcp view protocol guards', () => {
     expect(isMcpViewCommand({ action: 'open' })).toBe(true);
     expect(isMcpViewCommand({ action: 'refresh' })).toBe(true);
     expect(isMcpViewCommand({ action: 'selfTest' })).toBe(true);
+    expect(
+      isMcpViewCommand({ action: 'setPresentation', mode: 'floating-pill' }),
+    ).toBe(true);
   });
 
   it('accepts a valid MCP state', () => {
@@ -69,6 +72,9 @@ describe('mcp view protocol guards', () => {
 
   it('rejects malformed MCP payloads', () => {
     expect(isMcpViewCommand({ action: 'restart' })).toBe(false);
+    expect(
+      isMcpViewCommand({ action: 'setPresentation', mode: 'sidebar', side: 'bottom' }),
+    ).toBe(false);
     expect(
       isMcpViewState({
         ...createEmptyMcpViewState(),

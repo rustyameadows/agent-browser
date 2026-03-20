@@ -1,4 +1,10 @@
 import { isElementDescriptor, type ElementDescriptor, type PickerIntent } from './navigation';
+import {
+  isPanelPresentationMode,
+  isPanelSidebarSide,
+  type PanelPresentationMode,
+  type PanelSidebarSide,
+} from './panel-presentation';
 import { isStyleTweak, type StyleTweak } from './style';
 
 export const FEEDBACK_COMMAND_CHANNEL = 'feedback:command';
@@ -68,6 +74,11 @@ export interface FeedbackState {
 export type FeedbackCommand =
   | {
       action: 'open' | 'close' | 'toggle' | 'clearDraft';
+    }
+  | {
+      action: 'setPresentation';
+      mode: PanelPresentationMode;
+      side?: PanelSidebarSide;
     }
   | {
       action: 'startDraftFromSelection';
@@ -227,6 +238,11 @@ export const isFeedbackCommand = (value: unknown): value is FeedbackCommand => {
     case 'clearDraft':
     case 'submitDraft':
       return true;
+    case 'setPresentation':
+      return (
+        isPanelPresentationMode(value.mode) &&
+        (!('side' in value) || value.side === undefined || isPanelSidebarSide(value.side))
+      );
     case 'startDraftFromSelection':
       return (
         isElementDescriptor(value.selection) &&

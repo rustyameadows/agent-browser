@@ -6,7 +6,15 @@ import path from 'node:path';
 import {
   DEFAULT_ACCENT_COLOR,
   DEFAULT_CHROME_COLOR,
+  createDefaultPanelPresentationPreferences,
+  isPanelPresentationMode,
+  isPanelSidebarSide,
+  mergePanelPresentationPreferences,
+  normalizePanelPresentationPreference,
   type ChromeAppearanceState,
+  type PanelPresentationPreference,
+  type PanelPresentationPreferences,
+  type PanelSurfaceId,
 } from '@agent-browser/protocol';
 import { normalizeAddress } from './url';
 
@@ -30,6 +38,13 @@ type ProjectChromeConfigDocument = {
     usernameEnv?: unknown;
     passwordEnv?: unknown;
   };
+  panels?: {
+    feedback?: unknown;
+    style?: unknown;
+    markdown?: unknown;
+    mcp?: unknown;
+    project?: unknown;
+  };
 };
 
 type ProjectSelectionDocument = {
@@ -44,6 +59,7 @@ export type ProjectAppearanceUpdate = {
   defaultUrl?: string;
   agentLoginUsernameEnv?: string;
   agentLoginPasswordEnv?: string;
+  panelPreferences?: Partial<PanelPresentationPreferences>;
 };
 
 export interface ProjectAppearanceRuntime {
@@ -68,6 +84,8 @@ const normalizeHexColor = (value: string, fieldName: string): string => {
 
 const trimOptionalText = (value: string): string => value.trim();
 const trimOptionalPath = (value: string): string => trimOptionalText(value);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
 
 const normalizeDefaultUrl = (value: string): string => {
   const trimmed = trimOptionalText(value);
@@ -144,6 +162,7 @@ export const createProjectAppearanceState = (projectRoot: string | null): Chrome
   isOpen: false,
   projectRoot: projectRoot ?? '',
   configPath: projectRoot ? getProjectConfigPath(projectRoot) : '',
+  panelPreferences: createDefaultPanelPresentationPreferences(),
   chromeColor: DEFAULT_CHROME_COLOR,
   accentColor: DEFAULT_ACCENT_COLOR,
   projectIconPath: '',
@@ -159,6 +178,62 @@ export const createProjectAppearanceState = (projectRoot: string | null): Chrome
   dockIconLastError: null,
   lastError: null,
 });
+
+const panelSurfaceIds: PanelSurfaceId[] = ['feedback', 'style', 'markdown', 'mcp', 'project'];
+
+const parsePanelPresentationPreference = (
+  value: unknown,
+  fieldName: string,
+): PanelPresentationPreference => {
+  if (!isRecord(value)) {
+    throw new Error(`${fieldName} must be an object.`);
+  }
+
+  if (value.mode !== undefined && !isPanelPresentationMode(value.mode)) {
+    throw new Error(`${fieldName}.mode must be one of: sidebar, floating-pill, popout.`);
+  }
+
+  if (value.side !== undefined && !isPanelSidebarSide(value.side)) {
+    throw new Error(`${fieldName}.side must be either "left" or "right".`);
+  }
+
+  const mode =
+    value.mode === undefined
+      ? undefined
+      : (value.mode as PanelPresentationPreference['mode']);
+  const side = value.side as PanelPresentationPreference['side'];
+
+  return mode === undefined && side === undefined
+    ? normalizePanelPresentationPreference(undefined)
+    : normalizePanelPresentationPreference({
+        mode: mode ?? 'sidebar',
+        side,
+      });
+};
+
+const parsePanelPresentationPreferences = (value: unknown): PanelPresentationPreferences => {
+  if (value === undefined) {
+    return createDefaultPanelPresentationPreferences();
+  }
+
+  if (!isRecord(value)) {
+    throw new Error('Project config "panels" must be an object.');
+  }
+
+  const update: Partial<PanelPresentationPreferences> = {};
+  for (const surfaceId of panelSurfaceIds) {
+    if (value[surfaceId] === undefined) {
+      continue;
+    }
+
+    update[surfaceId] = parsePanelPresentationPreference(
+      value[surfaceId],
+      `panels.${surfaceId}`,
+    );
+  }
+
+  return mergePanelPresentationPreferences(createDefaultPanelPresentationPreferences(), update);
+};
 
 const parseProjectAppearanceDocument = (
   document: ProjectChromeConfigDocument,
@@ -185,6 +260,10 @@ const parseProjectAppearanceDocument = (
     (typeof document.agentLogin !== 'object' || document.agentLogin === null)
   ) {
     throw new Error('Project config "agentLogin" must be an object.');
+  }
+
+  if (document.panels !== undefined && (typeof document.panels !== 'object' || document.panels === null)) {
+    throw new Error('Project config "panels" must be an object.');
   }
 
   const chromeColor =
@@ -244,9 +323,11 @@ const parseProjectAppearanceDocument = (
     agentLoginPasswordEnv,
     env,
   );
+  const panelPreferences = parsePanelPresentationPreferences(document.panels);
 
   return {
     ...createProjectAppearanceState(projectRoot),
+    panelPreferences,
     chromeColor,
     accentColor,
     projectIconPath: iconInfo.projectIconPath,
@@ -279,6 +360,7 @@ export const parseProjectAppearanceConfig = (
 };
 
 const serializeProjectAppearanceConfig = (state: ChromeAppearanceState): string => {
+  const defaultPanelPreferences = createDefaultPanelPresentationPreferences();
   const chrome: Record<string, string> = {
     chromeColor: state.chromeColor,
     accentColor: state.accentColor,
@@ -305,6 +387,20 @@ const serializeProjectAppearanceConfig = (state: ChromeAppearanceState): string 
             : {}),
         }
       : undefined;
+  const panels = panelSurfaceIds.reduce<Record<string, PanelPresentationPreference>>((result, surfaceId) => {
+    const current = normalizePanelPresentationPreference(state.panelPreferences[surfaceId]);
+    const defaultPreference = normalizePanelPresentationPreference(defaultPanelPreferences[surfaceId]);
+
+    if (
+      current.mode === defaultPreference.mode &&
+      (current.mode !== 'sidebar' || current.side === defaultPreference.side)
+    ) {
+      return result;
+    }
+
+    result[surfaceId] = current;
+    return result;
+  }, {});
 
   return `${JSON.stringify(
     {
@@ -312,6 +408,7 @@ const serializeProjectAppearanceConfig = (state: ChromeAppearanceState): string 
       chrome,
       ...(startup ? { startup } : {}),
       ...(agentLogin ? { agentLogin } : {}),
+      ...(Object.keys(panels).length > 0 ? { panels } : {}),
     },
     null,
     2,
@@ -456,11 +553,16 @@ export class ProjectAppearanceStore implements ProjectAppearanceRuntime {
       agentLoginUsernameEnv,
       agentLoginPasswordEnv,
     );
+    const panelPreferences = mergePanelPresentationPreferences(
+      this.state.panelPreferences,
+      update.panelPreferences,
+    );
 
     return {
       ...this.state,
       chromeColor,
       accentColor,
+      panelPreferences,
       projectIconPath: iconInfo.projectIconPath,
       resolvedProjectIconPath: iconInfo.resolvedProjectIconPath,
       defaultUrl,

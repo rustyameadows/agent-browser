@@ -46,6 +46,15 @@ describe('project appearance config parsing', () => {
           usernameEnv: 'LOOP_AGENT_LOGIN_USERNAME',
           passwordEnv: 'LOOP_AGENT_LOGIN_PASSWORD',
         },
+        panels: {
+          feedback: {
+            mode: 'floating-pill',
+          },
+          style: {
+            mode: 'sidebar',
+            side: 'left',
+          },
+        },
       }),
       tempDir,
       {
@@ -61,6 +70,9 @@ describe('project appearance config parsing', () => {
     expect(state.agentLoginUsernameEnv).toBe('LOOP_AGENT_LOGIN_USERNAME');
     expect(state.agentLoginPasswordEnv).toBe('LOOP_AGENT_LOGIN_PASSWORD');
     expect(state.agentLoginReady).toBe(true);
+    expect(state.panelPreferences.feedback).toEqual({ mode: 'floating-pill' });
+    expect(state.panelPreferences.style).toEqual({ mode: 'sidebar', side: 'left' });
+    expect(state.panelPreferences.markdown).toEqual({ mode: 'sidebar', side: 'right' });
   });
 
   it('uses defaults for omitted values', () => {
@@ -74,6 +86,9 @@ describe('project appearance config parsing', () => {
 
     expect(state.chromeColor).toBe(createProjectAppearanceState('/tmp/project').chromeColor);
     expect(state.accentColor).toBe(createProjectAppearanceState('/tmp/project').accentColor);
+    expect(state.panelPreferences).toEqual(
+      createProjectAppearanceState('/tmp/project').panelPreferences,
+    );
   });
 
   it('rejects invalid json and invalid colors', () => {
@@ -138,6 +153,11 @@ describe('project appearance store', () => {
         usernameEnv: string;
         passwordEnv: string;
       };
+      panels?: {
+        feedback?: {
+          mode: string;
+        };
+      };
     };
 
     expect(writtenConfig.chrome.chromeColor).toBe('#112233');
@@ -148,6 +168,11 @@ describe('project appearance store', () => {
 
     await store.setAppearance({
       chromeColor: '#334455',
+      panelPreferences: {
+        feedback: {
+          mode: 'floating-pill',
+        },
+      },
     });
 
     const preservedConfig = JSON.parse(
@@ -163,12 +188,18 @@ describe('project appearance store', () => {
         usernameEnv: string;
         passwordEnv: string;
       };
+      panels: {
+        feedback: {
+          mode: string;
+        };
+      };
     };
 
     expect(preservedConfig.chrome.chromeColor).toBe('#334455');
     expect(preservedConfig.startup.defaultUrl).toBe('http://127.0.0.1:3000/');
     expect(preservedConfig.agentLogin.usernameEnv).toBe('LOOP_AGENT_LOGIN_USERNAME');
     expect(preservedConfig.agentLogin.passwordEnv).toBe('LOOP_AGENT_LOGIN_PASSWORD');
+    expect(preservedConfig.panels.feedback.mode).toBe('floating-pill');
 
     await writeFile(
       path.join(tempDir, '.loop-browser.json'),
@@ -181,6 +212,11 @@ describe('project appearance store', () => {
         startup: {
           defaultUrl: 'http://127.0.0.1:4000',
         },
+        panels: {
+          markdown: {
+            mode: 'popout',
+          },
+        },
       }),
     );
 
@@ -189,6 +225,7 @@ describe('project appearance store', () => {
     expect(store.getState().chromeColor).toBe('#AABBCC');
     expect(store.getState().accentColor).toBe('#334455');
     expect(store.getState().defaultUrl).toBe('http://127.0.0.1:4000/');
+    expect(store.getState().panelPreferences.markdown).toEqual({ mode: 'popout' });
 
     store.dispose();
   });

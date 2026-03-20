@@ -10,6 +10,9 @@ describe('markdown view protocol guards', () => {
     expect(isMarkdownViewCommand({ action: 'open' })).toBe(true);
     expect(isMarkdownViewCommand({ action: 'toggle' })).toBe(true);
     expect(isMarkdownViewCommand({ action: 'refresh', force: true })).toBe(true);
+    expect(
+      isMarkdownViewCommand({ action: 'setPresentation', mode: 'sidebar', side: 'left' }),
+    ).toBe(true);
   });
 
   it('accepts a valid markdown state', () => {
@@ -30,6 +33,9 @@ describe('markdown view protocol guards', () => {
 
   it('rejects malformed markdown payloads', () => {
     expect(isMarkdownViewCommand({ action: 'refresh', force: 'yes' })).toBe(false);
+    expect(
+      isMarkdownViewCommand({ action: 'setPresentation', mode: 'sidebar', side: 'bottom' }),
+    ).toBe(false);
     expect(
       isMarkdownViewState({
         ...createEmptyMarkdownViewState(),
