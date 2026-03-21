@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { VitePlugin } from '@electron-forge/plugin-vite';
@@ -10,6 +11,7 @@ const config: ForgeConfig = {
       unpack: '{**/*.node,**/*.dylib}',
     },
     extraResource: ['static'],
+    icon: path.resolve(__dirname, 'static/mac/loop-browser-app-icon'),
   },
   makers: [new MakerZIP({}, ['darwin'])],
   plugins: [

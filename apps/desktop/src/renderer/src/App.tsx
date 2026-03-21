@@ -55,6 +55,7 @@ import {
   resolveDraftProjectIconPath,
 } from './project-style-form';
 import { copyTextToClipboard } from './clipboard';
+import { LauncherBrandIcon } from './launcher-branding';
 
 const emptyState = createEmptyNavigationState();
 const emptyChromeAppearanceState = createEmptyChromeAppearanceState();
@@ -1376,10 +1377,15 @@ const LauncherSurface = ({
         <div className="launcherSurface__eyebrow">Loop Browser Launcher</div>
 
         <section className="launcherSurface__hero">
-          <div className="launcherSurface__title">Open a project and jump in.</div>
-          <div className="launcherSurface__subtitle">
-            Each project opens in its own Loop Browser session with its own config, profile, and
-            Dock icon. Use the launcher to start or revisit project windows.
+          <div className="launcherSurface__heroHeader">
+            <LauncherBrandIcon className="launcherSurface__brandIcon" />
+            <div className="launcherSurface__heroCopy">
+              <div className="launcherSurface__title">Open a project and jump in.</div>
+              <div className="launcherSurface__subtitle">
+                Each project opens in its own Loop Browser session with its own config, profile,
+                and Dock icon. Use the launcher to start or revisit project windows.
+              </div>
+            </div>
           </div>
           <div className="launcherSurface__actions">
             <button

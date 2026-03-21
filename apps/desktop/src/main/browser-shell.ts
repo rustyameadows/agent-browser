@@ -115,6 +115,7 @@ import {
 import { extractMarkdownFromHtml } from './markdown';
 import { mapDiagnosticsToMcpViewState, type McpDiagnosticsSource } from './mcp-view';
 import {
+  composeAppIdentityDockIcon,
   composeDefaultDockIcon,
   composeProjectDockIcon,
   dockIconTemplatePath,
@@ -3368,6 +3369,37 @@ export class BrowserShell {
 
   private async syncDockIcon(): Promise<void> {
     if (process.platform !== 'darwin' || !app.dock) {
+      return;
+    }
+
+    if (this.role === 'launcher') {
+      this.dockIconSource = 'chromeColor';
+      const launcherDockIconKey = 'launcher:app-identity';
+      if (this.appliedDockIconKey !== launcherDockIconKey) {
+        try {
+          const icon = composeAppIdentityDockIcon();
+          if (icon.isEmpty()) {
+            throw new Error('Electron created an empty Loop Browser app icon.');
+          }
+          app.dock.setIcon(icon);
+          this.appliedDockIconKey = launcherDockIconKey;
+          this.dockIconStatus = 'applied';
+          this.dockIconError = null;
+        } catch (error) {
+          this.dockIconError =
+            error instanceof Error
+              ? `Could not compose Loop Browser app icon: ${error.message}`
+              : 'Could not compose Loop Browser app icon.';
+          this.dockIconStatus = 'failed';
+          this.appliedDockIconKey = null;
+        }
+      } else {
+        this.dockIconStatus = 'applied';
+        this.dockIconError = null;
+      }
+
+      this.chromeAppearanceState = this.mergeChromeAppearanceDiagnostics(this.chromeAppearanceState);
+      this.sendChromeAppearanceState();
       return;
     }
 

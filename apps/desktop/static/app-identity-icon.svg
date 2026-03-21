@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <filter id="tileShadow" x="-16%" y="-16%" width="132%" height="132%">
+      <feDropShadow dx="0" dy="24" stdDeviation="34" flood-color="#111215" flood-opacity="0.12" />
+    </filter>
+  </defs>
+
+  <rect x="96" y="96" width="832" height="832" rx="204" fill="#FFFFFF" filter="url(#tileShadow)" />
+  <rect x="97" y="97" width="830" height="830" rx="203" fill="none" stroke="rgba(17,18,21,0.08)" stroke-width="2" />
+
+  <g fill="none" stroke="#111215" stroke-linecap="round" stroke-linejoin="round" stroke-width="42">
+    <path d="M 308 568 A 258 258 0 0 1 666 314" />
+    <path d="M 714 462 A 258 258 0 0 1 360 710" />
+    <path d="M 626 278 L 704 304 L 674 382" />
+    <path d="M 402 748 L 322 718 L 352 640" />
+
+    <path d="M 706 240 L 716 270" />
+    <path d="M 760 274 L 736 294" />
+    <path d="M 738 212 L 726 242" />
+
+    <path d="M 286 666 L 258 680" />
+    <path d="M 316 720 L 306 752" />
+    <path d="M 252 722 L 272 748" />
+  </g>
+
+  <g fill="#111215">
+    <circle cx="234" cy="512" r="14" />
+    <circle cx="790" cy="512" r="14" />
+  </g>
+</svg>

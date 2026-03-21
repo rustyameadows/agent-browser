@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { nativeImage, type NativeImage } from 'electron';
+import { APP_IDENTITY_ICON_DATA_URL } from '../shared/app-identity-icon';
 import {
   DOCK_ICON_CANVAS_SIZE,
   getDockIconArtMaskRadius,
@@ -476,3 +477,6 @@ export const composeDefaultDockIcon = async (options: {
     height: DOCK_ICON_CANVAS_SIZE,
   });
 };
+
+export const composeAppIdentityDockIcon = (): NativeImage =>
+  nativeImage.createFromDataURL(APP_IDENTITY_ICON_DATA_URL);

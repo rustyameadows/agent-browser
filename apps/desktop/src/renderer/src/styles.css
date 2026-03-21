@@ -739,6 +739,26 @@ a {
   padding: 22px 24px;
 }
 
+.launcherSurface__heroHeader {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.launcherSurface__heroCopy {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.launcherSurface__brandIcon {
+  display: block;
+  width: 84px;
+  height: 84px;
+  flex: none;
+}
+
 .launcherSurface__title {
   max-width: 16ch;
   color: var(--chrome-text);
@@ -2271,6 +2291,15 @@ a {
 @media (max-width: 860px) {
   .launcherSurface__eyebrow {
     padding-left: 70px;
+  }
+
+  .launcherSurface__heroHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .launcherSurface__brandIcon {
+    width: 72px;
+    height: 72px;
   }
 
   .launcherSurface__title {

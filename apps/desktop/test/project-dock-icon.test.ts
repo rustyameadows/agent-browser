@@ -105,6 +105,7 @@ vi.mock('electron', () => {
 });
 
 import {
+  composeAppIdentityDockIcon,
   composeDefaultDockIcon,
   composeProjectDockIcon,
   DEFAULT_DOCK_ICON_COLOR,
@@ -209,6 +210,14 @@ describe('project dock icon helpers', () => {
     const [[bitmap]] = vi.mocked(nativeImage.createFromBitmap).mock.calls.slice(-1);
     expect(readPixel(bitmap, 0, 0)).toEqual([0x00, 0x00, 0x00, 0x00]);
     expect(readPixel(bitmap, 256, 300)).toEqual([0xaa, 0x44, 0x11, 0xff]);
+  });
+
+  it('composes the Loop Browser app identity dock icon from the shared artwork', () => {
+    const dockIcon = composeAppIdentityDockIcon();
+
+    expect(dockIcon.isEmpty()).toBe(false);
+    const lastCreateFromDataUrlCall = vi.mocked(nativeImage.createFromDataURL).mock.calls.at(-1);
+    expect(lastCreateFromDataUrlCall?.[0]).toContain('data:image/svg+xml');
   });
 
   it('uses the black square only for the untouched default chrome color', async () => {

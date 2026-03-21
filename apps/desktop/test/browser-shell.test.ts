@@ -1817,6 +1817,36 @@ describe('BrowserShell', () => {
     expect(app.dock?.show).toHaveBeenCalledTimes(2);
   });
 
+  it('uses the shared app identity icon for the launcher dock', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+      role: 'launcher',
+    });
+    const subject = shell as unknown as BrowserShellHarness & {
+      syncDockIcon: () => Promise<void>;
+    };
+
+    await subject.syncDockIcon();
+
+    expect(app.dock?.setIcon).toHaveBeenCalled();
+    expect(nativeImage.createFromDataURL).toHaveBeenCalled();
+    expect(nativeImage.createFromBitmap).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing generated default icon for project sessions without a project icon', async () => {
+    const shell = new BrowserShell({
+      projectAppearance: createProjectAppearanceRuntime(),
+    });
+    const subject = shell as unknown as BrowserShellHarness & {
+      syncDockIcon: () => Promise<void>;
+    };
+
+    await subject.syncDockIcon();
+
+    expect(app.dock?.setIcon).toHaveBeenCalled();
+    expect(nativeImage.createFromBitmap).toHaveBeenCalled();
+  });
+
   it('surfaces a dock icon error when Electron creates an empty dock image', async () => {
     vi.mocked(nativeImage.createFromDataURL).mockReturnValue({
       isEmpty: () => true,
