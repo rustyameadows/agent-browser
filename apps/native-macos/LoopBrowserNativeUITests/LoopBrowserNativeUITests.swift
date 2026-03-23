@@ -47,6 +47,8 @@ final class LoopBrowserNativeUITests: XCTestCase {
     _ = waitForWorkspaceState(timeout: 10) { state in
       state.viewports.count == 2
     }
+    XCTAssertTrue(requireWebView(labeled: "Primary View", timeout: 10).exists)
+    XCTAssertTrue(requireWebView(labeled: "Secondary View", timeout: 10).exists)
   }
 
   func testViewportInputFocusCanReturnToCanvasAndMoveViewport() {
@@ -124,6 +126,13 @@ final class LoopBrowserNativeUITests: XCTestCase {
     XCTAssertGreaterThan(abs(movedViewportBAgain.minX - resizedViewportB.minX), 90)
     XCTAssertGreaterThan(abs(movedViewportBAgain.minY - resizedViewportB.minY), 60)
     XCTAssertEqual(requireOtherElement("viewport-card-1").value as? String, "selected")
+
+    let finalState = waitForWorkspaceState(timeout: 10) { state in
+      abs(state.viewports[1].frame.x - resizedState.viewports[1].frame.x) > 90
+        && abs(state.viewports[1].frame.y - resizedState.viewports[1].frame.y) > 60
+    }
+    XCTAssertGreaterThan(abs(finalState.viewports[1].frame.x - resizedState.viewports[1].frame.x), 90)
+    XCTAssertGreaterThan(abs(finalState.viewports[1].frame.y - resizedState.viewports[1].frame.y), 60)
 
     clickIncrementButton(index: 0, expectedCount: 1)
   }
