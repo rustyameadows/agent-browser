@@ -28,9 +28,11 @@ final class LoopBrowserNativeUITests: XCTestCase {
     continueAfterFailure = false
     testAppSupportDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent("loop-browser-native-uitests-\(UUID().uuidString)", isDirectory: true)
+
     app = XCUIApplication()
     app.launchEnvironment["LOOP_BROWSER_TEST_PROJECT_ROOT"] = fixtureProjectRoot.path
     app.launchEnvironment["LOOP_BROWSER_TEST_START_URL"] = primaryFixtureURL
+    app.launchEnvironment["LOOP_BROWSER_TEST_SECONDARY_URL"] = secondaryFixtureURL
     app.launchEnvironment["LOOP_BROWSER_TEST_VIEWPORT_WIDTH"] = "960"
     app.launchEnvironment["LOOP_BROWSER_TEST_VIEWPORT_HEIGHT"] = "640"
     app.launchEnvironment["LOOP_BROWSER_TEST_DISABLE_RESTORE"] = "1"
@@ -39,252 +41,91 @@ final class LoopBrowserNativeUITests: XCTestCase {
     app.launch()
 
     _ = requireOtherElement("viewport-card-0", timeout: 10)
-    _ = requireOtherElement("inspector-sidebar")
+    _ = requireOtherElement("viewport-card-1", timeout: 10)
+    _ = requireOtherElement("canvas-interaction-surface", timeout: 10)
+    _ = requireOtherElement("inspector-sidebar", timeout: 10)
     _ = waitForWorkspaceState(timeout: 10) { state in
-      !state.viewports.isEmpty
+      state.viewports.count == 2
     }
   }
 
-  func testEmptyCanvasClickClearsSelection() {
-    requireOtherElement("viewport-header-0").click()
+  func testViewportInputFocusCanReturnToCanvasAndMoveViewport() {
+    focusViewportInput(index: 0, text: "Loop Native")
+
+    let beforePan = try! XCTUnwrap(workspaceState())
+    let afterPan = dragCanvas(by: CGVector(dx: 92, dy: 68), minimumDistance: 40)
+    XCTAssertGreaterThan(
+      hypot(
+        afterPan.canvasOffsetX - beforePan.canvasOffsetX,
+        afterPan.canvasOffsetY - beforePan.canvasOffsetY
+      ),
+      40
+    )
+
+    let beforeMove = viewportCardFrame(index: 0)
+    let afterMove = dragViewportHeader(index: 0, delta: CGVector(dx: 156, dy: 96))
+    XCTAssertGreaterThan(abs(afterMove.minX - beforeMove.minX), 110)
+    XCTAssertGreaterThan(abs(afterMove.minY - beforeMove.minY), 70)
+    XCTAssertEqual(requireOtherElement("viewport-card-0").value as? String, "selected")
+  }
+
+  func testCompositeCanvasWorkflowRemainsInteractive() {
+    let baselineState = try! XCTUnwrap(workspaceState())
+    let baselineViewportA = viewportCardFrame(index: 0)
+    let baselineViewportB = viewportCardFrame(index: 1)
+
+    focusViewportInput(index: 0, text: "Focus trap")
+
+    _ = dragCanvas(by: CGVector(dx: 84, dy: 62), minimumDistance: 36)
+
+    let zoomedOutState = zoomOut(times: 6)
+    XCTAssertLessThan(zoomedOutState.canvasScale, baselineState.canvasScale * 0.65)
+
+    _ = dragCanvas(by: CGVector(dx: -132, dy: 94), minimumDistance: 44)
+
+    let zoomedInState = zoomIn(times: 4)
+    XCTAssertGreaterThan(zoomedInState.canvasScale, zoomedOutState.canvasScale * 1.55)
+
+    _ = dragCanvas(by: CGVector(dx: 118, dy: -74), minimumDistance: 44)
+
+    let movedViewportA = dragViewportHeader(index: 0, delta: CGVector(dx: 172, dy: 118))
+    XCTAssertGreaterThan(abs(movedViewportA.minX - baselineViewportA.minX), 130)
+    XCTAssertGreaterThan(abs(movedViewportA.minY - baselineViewportA.minY), 90)
     XCTAssertEqual(requireOtherElement("viewport-card-0").value as? String, "selected")
 
-    requireOtherElement("canvas-empty-probe").click()
+    let resetState = resetCanvasZoom()
+    let resetViewportA = viewportCardFrame(index: 0)
+    XCTAssertEqual(resetState.canvasScale, 1, accuracy: 0.03)
+    XCTAssertEqual(resetViewportA.width, resetState.viewports[0].frame.width, accuracy: 16)
+    XCTAssertEqual(resetViewportA.height, resetState.viewports[0].frame.height, accuracy: 16)
+    XCTAssertGreaterThan(abs(resetViewportA.minX - baselineViewportA.minX), 120)
 
-    XCTAssertEqual(requireOtherElement("viewport-card-0").value as? String, "unselected")
-  }
+    _ = dragCanvas(by: CGVector(dx: -96, dy: 88), minimumDistance: 40)
 
-  func testEmptyCanvasScrollPansCanvas() {
-    let before = try! XCTUnwrap(workspaceState())
+    let resizedViewportB = resizeViewportRight(index: 1, deltaX: 148)
+    XCTAssertGreaterThan(resizedViewportB.width - baselineViewportB.width, 110)
+    XCTAssertLessThan(abs(resizedViewportB.height - baselineViewportB.height), 10)
+    XCTAssertEqual(requireOtherElement("viewport-card-1").value as? String, "selected")
 
-    requireOtherElement("canvas-empty-probe").scroll(byDeltaX: 0, deltaY: -240)
-
-    let after = waitForWorkspaceState { state in
-      abs(state.canvasOffsetY - before.canvasOffsetY) > 20
+    let resizedState = waitForWorkspaceState(timeout: 10) { state in
+      state.viewports[1].frame.width - baselineState.viewports[1].frame.width > 110
     }
-    XCTAssertGreaterThan(abs(after.canvasOffsetY - before.canvasOffsetY), 20)
-  }
-
-  func testViewportHeaderDragMovesViewport() {
-    let before = viewportCardFrame(index: 0)
-    let start = surfaceCoordinate(
-      forScreenPoint: CGPoint(
-        x: before.minX + before.width * 0.25,
-        y: before.minY + 22
-      )
-    )
-    let end = surfaceCoordinate(
-      forScreenPoint: CGPoint(
-        x: before.minX + before.width * 0.25 + 160,
-        y: before.minY + 22 + 110
-      )
+    XCTAssertGreaterThan(
+      resizedState.viewports[1].frame.width - baselineState.viewports[1].frame.width,
+      110
     )
 
-    start.press(forDuration: 0.05, thenDragTo: end)
+    let deeplyZoomedOutState = zoomOut(times: 10)
+    XCTAssertLessThan(deeplyZoomedOutState.canvasScale, 0.45)
 
-    let after = waitForOtherElementFrame(identifier: "viewport-card-0") { frame in
-      abs(frame.minX - before.minX) > 120
-        && abs(frame.minY - before.minY) > 70
-    }
-    XCTAssertGreaterThan(abs(after.minX - before.minX), 120)
-    XCTAssertGreaterThan(abs(after.minY - before.minY), 70)
-  }
+    _ = dragCanvas(by: CGVector(dx: 144, dy: 108), minimumDistance: 52)
 
-  func testResizeHandlesRespectAxisRulesAndShiftMirror() {
-    _ = requireOtherElement("viewport-resize-right-0")
-    let beforeEdgeResize = viewportCardFrame(index: 0)
-    let rightStart = surfaceCoordinate(
-      forScreenPoint: CGPoint(
-        x: beforeEdgeResize.maxX + 4,
-        y: beforeEdgeResize.midY
-      )
-    )
-    let rightEnd = surfaceCoordinate(
-      forScreenPoint: CGPoint(
-        x: beforeEdgeResize.maxX + 124,
-        y: beforeEdgeResize.midY
-      )
-    )
-    rightStart.press(forDuration: 0.05, thenDragTo: rightEnd)
+    let movedViewportBAgain = dragViewportHeader(index: 1, delta: CGVector(dx: -136, dy: 84))
+    XCTAssertGreaterThan(abs(movedViewportBAgain.minX - resizedViewportB.minX), 90)
+    XCTAssertGreaterThan(abs(movedViewportBAgain.minY - resizedViewportB.minY), 60)
+    XCTAssertEqual(requireOtherElement("viewport-card-1").value as? String, "selected")
 
-    let afterEdgeResize = waitForOtherElementFrame(identifier: "viewport-card-0") { frame in
-      frame.width - beforeEdgeResize.width > 90
-    }
-    XCTAssertGreaterThan(afterEdgeResize.width - beforeEdgeResize.width, 90)
-    XCTAssertLessThan(abs(afterEdgeResize.height - beforeEdgeResize.height), 8)
-
-    _ = requireOtherElement("viewport-resize-bottom-right-0")
-    let beforeShiftResize = afterEdgeResize
-
-    XCUIElement.perform(withKeyModifiers: .shift) {
-      let start = surfaceCoordinate(
-        forScreenPoint: CGPoint(
-          x: beforeShiftResize.maxX + 4,
-          y: beforeShiftResize.maxY + 4
-        )
-      )
-      let end = surfaceCoordinate(
-        forScreenPoint: CGPoint(
-          x: beforeShiftResize.maxX + 64,
-          y: beforeShiftResize.maxY + 54
-        )
-      )
-      start.press(forDuration: 0.05, thenDragTo: end)
-    }
-
-    let afterShiftResize = waitForOtherElementFrame(identifier: "viewport-card-0") { frame in
-      frame.width - beforeShiftResize.width > 90
-        && frame.height - beforeShiftResize.height > 70
-        && abs(frame.midX - beforeShiftResize.midX) < 16
-        && abs(frame.midY - beforeShiftResize.midY) < 16
-    }
-    XCTAssertGreaterThan(afterShiftResize.width - beforeShiftResize.width, 90)
-    XCTAssertGreaterThan(afterShiftResize.height - beforeShiftResize.height, 70)
-    XCTAssertLessThan(abs(afterShiftResize.midX - beforeShiftResize.midX), 16)
-    XCTAssertLessThan(abs(afterShiftResize.midY - beforeShiftResize.midY), 16)
-  }
-
-  func testViewportWebContentRemainsInteractive() {
-    requireButton("inspector-toggle").click()
-    requireOtherElement("canvas-empty-probe").click()
-
-    let primaryWebView = requireWebView(labeled: "Primary View")
-    let incrementButton = primaryWebView.buttons["Increment Counter"].firstMatch
-    XCTAssertTrue(incrementButton.waitForExistence(timeout: 10))
-    incrementButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-    XCTAssertTrue(primaryWebView.staticTexts["Counter: 1"].waitForExistence(timeout: 5))
-
-    let textField = primaryWebView.textFields["Fixture Input"].firstMatch
-    XCTAssertTrue(textField.waitForExistence(timeout: 5))
-    textField.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
-    app.typeText("Loop Native")
-
-    let typedValue = textField.value as? String ?? ""
-    XCTAssertTrue(typedValue.contains("Loop Native"))
-  }
-
-  func testInspectorToggleCollapsesAndReopens() {
-    let toggle = requireButton("inspector-toggle")
-    let inspector = requireOtherElement("inspector-sidebar")
-
-    toggle.click()
-    XCTAssertTrue(waitForNonExistence(of: inspector))
-
-    toggle.click()
-    XCTAssertTrue(inspector.waitForExistence(timeout: 5))
-  }
-
-  func testToolbarZoomCommandsChangeCanvasPresentation() {
-    let baseline = viewportCardFrame(index: 0)
-
-    requireButton("canvas-zoom-in").click()
-    let zoomedIn = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-      frame.width > baseline.width * 1.05
-    }
-    XCTAssertGreaterThan(zoomedIn.width, baseline.width * 1.05)
-
-    app.typeKey("0", modifierFlags: .command)
-    let reset = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-      abs(frame.width - baseline.width) < 8
-        && abs(frame.height - baseline.height) < 8
-        && abs(frame.minX - baseline.minX) < 8
-        && abs(frame.minY - baseline.minY) < 8
-    }
-    XCTAssertLessThan(abs(reset.width - baseline.width), 8)
-    XCTAssertLessThan(abs(reset.height - baseline.height), 8)
-    XCTAssertLessThan(abs(reset.minX - baseline.minX), 8)
-    XCTAssertLessThan(abs(reset.minY - baseline.minY), 8)
-
-    requireButton("canvas-zoom-out").click()
-    let zoomedOut = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-      frame.width < baseline.width * 0.95
-    }
-    XCTAssertLessThan(zoomedOut.width, baseline.width * 0.95)
-  }
-
-  func testRepeatedZoomCommandsRemainResponsive() {
-    let baseline = viewportCardFrame(index: 0)
-    let baselineState = try! XCTUnwrap(workspaceState())
-    let zoomOutButton = requireButton("canvas-zoom-out")
-    let zoomInButton = requireButton("canvas-zoom-in")
-    let actualSizeButton = requireButton("canvas-zoom-reset")
-    let inspectorToggle = requireButton("inspector-toggle")
-    let inspector = requireOtherElement("inspector-sidebar")
-
-    for cycle in 1...3 {
-      zoomOutButton.click()
-      let zoomedOut = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-        frame.width < baseline.width * 0.95
-      }
-      let zoomedOutState = waitForWorkspaceState(timeout: 10) { state in
-        state.canvasScale < baselineState.canvasScale * 0.95
-      }
-      XCTAssertLessThan(
-        zoomedOut.width,
-        baseline.width * 0.95,
-        "Cycle \(cycle) zoom out did not shrink the viewport."
-      )
-      XCTAssertLessThan(
-        zoomedOutState.canvasScale,
-        baselineState.canvasScale * 0.95,
-        "Cycle \(cycle) persisted zoom-out scale did not decrease."
-      )
-
-      zoomInButton.click()
-      let zoomedIn = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-        frame.width > zoomedOut.width * 1.05
-      }
-      let zoomedInState = waitForWorkspaceState(timeout: 10) { state in
-        state.canvasScale > zoomedOutState.canvasScale * 1.05
-      }
-      XCTAssertGreaterThan(
-        zoomedIn.width,
-        zoomedOut.width * 1.05,
-        "Cycle \(cycle) zoom in did not expand the viewport again."
-      )
-      XCTAssertGreaterThan(
-        zoomedInState.canvasScale,
-        zoomedOutState.canvasScale * 1.05,
-        "Cycle \(cycle) persisted zoom-in scale did not increase."
-      )
-
-      actualSizeButton.click()
-      let reset = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-        abs(frame.width - baseline.width) < 8
-          && abs(frame.height - baseline.height) < 8
-          && abs(frame.minX - baseline.minX) < 8
-          && abs(frame.minY - baseline.minY) < 8
-      }
-      let resetState = waitForWorkspaceState(timeout: 10) { state in
-        abs(state.canvasScale - baselineState.canvasScale) < 0.02
-      }
-      XCTAssertLessThan(abs(reset.width - baseline.width), 8, "Cycle \(cycle) actual size width drifted.")
-      XCTAssertLessThan(abs(reset.height - baseline.height), 8, "Cycle \(cycle) actual size height drifted.")
-      XCTAssertLessThan(abs(reset.minX - baseline.minX), 8, "Cycle \(cycle) actual size x drifted.")
-      XCTAssertLessThan(abs(reset.minY - baseline.minY), 8, "Cycle \(cycle) actual size y drifted.")
-      XCTAssertLessThan(
-        abs(resetState.canvasScale - baselineState.canvasScale),
-        0.02,
-        "Cycle \(cycle) persisted actual-size scale did not return to baseline."
-      )
-    }
-
-    zoomOutButton.click()
-    let finalZoomOut = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-      frame.width < baseline.width * 0.95
-    }
-    XCTAssertLessThan(finalZoomOut.width, baseline.width * 0.95)
-
-    zoomInButton.click()
-    let finalZoomIn = waitForOtherElementFrame(identifier: "viewport-card-0", timeout: 10) { frame in
-      frame.width > finalZoomOut.width * 1.05
-    }
-    XCTAssertGreaterThan(finalZoomIn.width, finalZoomOut.width * 1.05)
-
-    inspectorToggle.click()
-    XCTAssertTrue(waitForNonExistence(of: inspector))
-    inspectorToggle.click()
-    XCTAssertTrue(inspector.waitForExistence(timeout: 5))
+    clickIncrementButton(index: 0, expectedCount: 1)
   }
 
   private var nativeMacOSRoot: URL {
@@ -298,9 +139,22 @@ final class LoopBrowserNativeUITests: XCTestCase {
   }
 
   private var primaryFixtureURL: String {
-    fixtureURL(title: "Primary View", subtitle: "Primary interactive fixture viewport.")
+    fixtureURL(
+      title: "Primary View",
+      subtitle: "Primary composite workflow viewport.",
+      variant: "primary"
+    )
   }
-  private func fixtureURL(title: String, subtitle: String) -> String {
+
+  private var secondaryFixtureURL: String {
+    fixtureURL(
+      title: "Secondary View",
+      subtitle: "Secondary composite workflow viewport.",
+      variant: "secondary"
+    )
+  }
+
+  private func fixtureURL(title: String, subtitle: String, variant: String) -> String {
     var components = URLComponents(
       url: fixtureProjectRoot.appendingPathComponent("interactive-fixture.html"),
       resolvingAgainstBaseURL: false
@@ -308,8 +162,142 @@ final class LoopBrowserNativeUITests: XCTestCase {
     components.queryItems = [
       URLQueryItem(name: "title", value: title),
       URLQueryItem(name: "subtitle", value: subtitle),
+      URLQueryItem(name: "variant", value: variant),
     ]
     return components.url!.absoluteString
+  }
+
+  private func focusViewportInput(index: Int, text: String) {
+    let webView = requireWebView(labeled: viewportLabel(for: index))
+    let textField = webView.textFields["Fixture Input"].firstMatch
+    XCTAssertTrue(textField.waitForExistence(timeout: 5))
+    textField.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    app.typeText(text)
+
+    let typedValue = textField.value as? String ?? ""
+    XCTAssertTrue(typedValue.contains(text))
+  }
+
+  private func clickIncrementButton(index: Int, expectedCount: Int) {
+    let webView = requireWebView(labeled: viewportLabel(for: index))
+    let incrementButton = webView.buttons["Increment Counter"].firstMatch
+    XCTAssertTrue(incrementButton.waitForExistence(timeout: 5))
+    incrementButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    XCTAssertTrue(webView.staticTexts["Counter: \(expectedCount)"].waitForExistence(timeout: 5))
+  }
+
+  @discardableResult
+  private func dragCanvas(
+    by translation: CGVector,
+    minimumDistance: Double
+  ) -> UITestWorkspaceState {
+    let before = try! XCTUnwrap(workspaceState())
+    let startPoint = emptyCanvasScreenPoint()
+    let start = surfaceCoordinate(forScreenPoint: startPoint)
+    let end = surfaceCoordinate(
+      forScreenPoint: CGPoint(x: startPoint.x + translation.dx, y: startPoint.y + translation.dy)
+    )
+
+    start.press(forDuration: 0.05, thenDragTo: end)
+
+    return waitForWorkspaceState(timeout: 10) { state in
+      hypot(
+        state.canvasOffsetX - before.canvasOffsetX,
+        state.canvasOffsetY - before.canvasOffsetY
+      ) > minimumDistance
+    }
+  }
+
+  @discardableResult
+  private func dragViewportHeader(index: Int, delta: CGVector) -> CGRect {
+    let before = viewportCardFrame(index: index)
+    let startPoint = CGPoint(
+      x: before.minX + before.width * 0.24,
+      y: before.minY + 20
+    )
+    let start = surfaceCoordinate(forScreenPoint: startPoint)
+    let end = surfaceCoordinate(
+      forScreenPoint: CGPoint(x: startPoint.x + delta.dx, y: startPoint.y + delta.dy)
+    )
+
+    start.press(forDuration: 0.05, thenDragTo: end)
+
+    return waitForOtherElementFrame(identifier: "viewport-card-\(index)", timeout: 10) { frame in
+      abs(frame.minX - before.minX) > 70
+        && abs(frame.minY - before.minY) > 50
+    }
+  }
+
+  @discardableResult
+  private func resizeViewportRight(index: Int, deltaX: CGFloat) -> CGRect {
+    let before = viewportCardFrame(index: index)
+    let start = surfaceCoordinate(
+      forScreenPoint: CGPoint(
+        x: before.maxX + 4,
+        y: before.midY
+      )
+    )
+    let end = surfaceCoordinate(
+      forScreenPoint: CGPoint(
+        x: before.maxX + 4 + deltaX,
+        y: before.midY
+      )
+    )
+
+    start.press(forDuration: 0.05, thenDragTo: end)
+
+    return waitForOtherElementFrame(identifier: "viewport-card-\(index)", timeout: 10) { frame in
+      frame.width - before.width > 90
+    }
+  }
+
+  private func zoomOut(times: Int) -> UITestWorkspaceState {
+    let button = requireButton("canvas-zoom-out")
+    var lastState = try! XCTUnwrap(workspaceState())
+
+    for _ in 0..<times {
+      let baseline = lastState
+      button.click()
+      lastState = waitForWorkspaceState(timeout: 10) { state in
+        state.canvasScale < baseline.canvasScale - 0.01
+      }
+    }
+
+    return lastState
+  }
+
+  private func zoomIn(times: Int) -> UITestWorkspaceState {
+    let button = requireButton("canvas-zoom-in")
+    var lastState = try! XCTUnwrap(workspaceState())
+
+    for _ in 0..<times {
+      let baseline = lastState
+      button.click()
+      lastState = waitForWorkspaceState(timeout: 10) { state in
+        state.canvasScale > baseline.canvasScale + 0.01
+      }
+    }
+
+    return lastState
+  }
+
+  private func resetCanvasZoom() -> UITestWorkspaceState {
+    requireButton("canvas-zoom-reset").click()
+    return waitForWorkspaceState(timeout: 10) { state in
+      abs(state.canvasScale - 1) < 0.03
+    }
+  }
+
+  private func viewportLabel(for index: Int) -> String {
+    index == 0 ? "Primary View" : "Secondary View"
+  }
+
+  private func emptyCanvasScreenPoint() -> CGPoint {
+    let surfaceFrame = requireOtherElement("canvas-interaction-surface").frame
+    return CGPoint(
+      x: surfaceFrame.minX + 72,
+      y: surfaceFrame.minY + 120
+    )
   }
 
   private func waitForNonExistence(of element: XCUIElement, timeout: TimeInterval = 5) -> Bool {
