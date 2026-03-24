@@ -1,7 +1,7 @@
 # Loop Browser Native macOS Implementation Plan
 
 Status: Proposed implementation plan for v0  
-Last updated: March 21, 2026
+Last updated: March 24, 2026
 
 ## Summary
 
@@ -15,9 +15,16 @@ The implementation is locked to:
 - `WKWebView` for live local Viewports
 - one workspace window per Project
 
-The native app starts from greenfield. The current repo contains no native scaffold, no
-`Package.swift`, no `.xcodeproj`, and no `.swift` sources. The rewrite should selectively preserve
-behavior from the Electron app rather than trying to port Electron structure directly.
+The repo already includes the core native scaffold:
+
+- `apps/native-macos/LoopBrowserNative.xcodeproj`
+- `apps/native-macos/LoopBrowserNative`
+- `apps/native-macos/LoopBrowserNativeSupport`
+- `apps/native-macos/LoopBrowserNativeTests`
+- `apps/native-macos/LoopBrowserNativeUITests`
+
+The work here extends that native codebase and preserves established product behavior. It should
+not reintroduce any dependency on the removed legacy desktop stack.
 
 The main preserved behaviors are:
 
@@ -30,8 +37,8 @@ The main preserved behaviors are:
 
 ## Current-state findings from the existing repo
 
-The current Electron app already establishes several behaviors that the native app should treat as
-source-of-truth product behavior for v0:
+The current native app already establishes several behaviors that should remain source-of-truth
+product behavior for v0:
 
 - Project appearance is persisted through `.loop-browser.json`.
 - repo-local agent credentials are persisted through `.loop-browser.local.json`.
@@ -41,9 +48,9 @@ source-of-truth product behavior for v0:
 - session and Project lifecycles are already organized around Project-specific context rather than a
   general browsing model.
 
-These behaviors are already represented in the current codebase through the existing Project
-appearance, agent login, page login, and browser shell modules. The native rewrite should preserve
-their semantics even if implementation details change.
+These behaviors are already represented in the current codebase through the project settings flow,
+agent login flow, workspace state, viewport management, and local MCP action surface. Future work
+should preserve their semantics even if implementation details change.
 
 ## Architecture decisions
 
@@ -330,7 +337,7 @@ Exit criteria:
 - Confirm failed edits or failed refreshes produce visible error states.
 - Confirm at least 5 active Viewports remain usable.
 
-### Parity scenarios from the current Electron app
+### Current product behavior scenarios
 
 - Confirm `.loop-browser.json` remains the shareable Project settings source.
 - Confirm `.loop-browser.local.json` remains the repo-local agent login store.
@@ -345,46 +352,33 @@ Exit criteria:
 
 ## Local development environment readiness
 
-Environment verification was performed locally on March 21, 2026.
+Environment verification was performed locally on March 24, 2026.
 
 ### Commands run and observed results
 
 | Command | Observed result |
 | --- | --- |
 | `sw_vers` | `macOS 26.3 (25D2125)` |
-| `xcode-select -p` | `/Library/Developer/CommandLineTools` |
-| `xcodebuild -version` | failed because full Xcode is not selected or installed |
+| `xcode-select -p` | `/Applications/Xcode.app/Contents/Developer` |
+| `xcodebuild -version` | `Xcode 26.3` / `Build version 17C529` |
 | `swift --version` | `Apple Swift version 6.2.4` |
-| `brew --version` | `Homebrew 5.1.0` |
-| `node -v` | `v25.8.1` |
-| `npm -v` | `11.11.0` |
-| `env HOME=/tmp swift -module-cache-path /tmp/swift-module-cache -e 'import AppKit; print("AppKit ok")'` | `AppKit ok` |
-| `env HOME=/tmp swift -module-cache-path /tmp/swift-module-cache -e 'import WebKit; print("WebKit ok")'` | `WebKit ok` |
 | `git status --short` | clean working tree |
 
 ### Readiness summary
 
 Ready:
 
+- Full Xcode 26.3 is selected and `xcodebuild` is available.
 - Swift 6.2.4 is installed.
-- AppKit and WebKit imports succeed in the local toolchain.
-- Homebrew 5.1.0 is installed.
-- Node v25.8.1 and npm 11.11.0 are installed.
 - The repo working tree is clean.
-
-Blocked:
-
-- `xcodebuild` currently fails because the active developer directory is
-  `/Library/Developer/CommandLineTools`.
-- `/Applications/Xcode.app` is absent, so a full Xcode installation is not available yet.
-- Native app builds, signing, simulator flows, and packaging that depend on `xcodebuild` should be
-  treated as blocked until full Xcode is installed and selected.
 
 ### Immediate setup required before native implementation
 
-- Install full Xcode.
-- Switch the active developer directory to the Xcode app bundle.
-- Re-run `xcodebuild -version` and a minimal native app build before starting implementation.
+- Re-run `swift test --package-path apps/native-macos/LoopBrowserNativeSupport` after support
+  package changes.
+- Re-run `xcodebuild test -project apps/native-macos/LoopBrowserNative.xcodeproj -scheme
+  LoopBrowserNative -destination "platform=macOS,arch=arm64"` after native app or UI changes.
+- Re-run `./scripts/package-native-mac.sh` after changes that affect the shipped app bundle.
 
 ## Assumptions
 
@@ -394,4 +388,4 @@ Blocked:
 - v0 uses one workspace window per Project.
 - ChatGPT account auth is a product requirement, but the final auth implementation depends on the
   integration surface available at build time.
-- The rewrite is greenfield on the native side and should preserve behavior, not Electron internals.
+- Future implementation extends the existing native app and preserves current product behavior.

@@ -1,32 +1,42 @@
 # Loop Browser
 
-Loop Browser is a desktop browser shell for human-and-agent workflows. It gives you a real page view, trusted app chrome, a local MCP server, and built-in tools for picking elements, leaving feedback, extracting Markdown, and capturing screenshots.
+Loop Browser is a native macOS workspace app for human-and-agent workflows. It opens a local web
+project, lets you arrange multiple live `WKWebView` viewports on an infinite canvas, and exposes a
+local MCP server so external agents can inspect the current workspace and act on it.
 
-Instead of treating the browser like a black box, Loop Browser keeps the page, your notes, and the local tool surface in one place.
+Instead of treating a browser as a throwaway preview window, Loop Browser keeps project settings,
+live routes, viewport layout, and local agent actions in one native workspace.
 
 ## What You Can Do
 
-- Open `https://`, `http://`, or `file://` pages inside the app.
-- Use Pick Mode to inspect a page element and keep a structured descriptor in the chrome.
-- Open `Feedback Loop` to leave comments tied to the exact element you selected.
-- Open `View as MD` to convert the current page into Markdown and copy the result.
-- Open `MCP Status` to inspect the local tool server, registration details, and recent request activity.
-- Capture screenshots of the page, an element, or the full app window through MCP tools.
+- Open a local project folder and restore its saved workspace state.
+- Spawn, move, resize, reload, and close multiple live viewports on the canvas.
+- Save project appearance, default startup URL, and an optional project icon in
+  `.loop-browser.json`.
+- Save repo-local agent login credentials in `.loop-browser.local.json`.
+- Use `Use Agent Login` on matching-origin login pages without auto-submitting the form.
+- Inspect the action log and current workspace state while MCP clients interact with the app.
 
-## First Launch
+## Opening A Project
 
-The app opens a checked-in local fixture on first launch, so you can verify navigation before wiring it into anything else. From there, replace the address with any page you want to inspect.
+On first launch, use `Open Project` and choose the root folder for the local site or app you want
+to work on.
 
-Plain web popups are opened externally instead of spawning in-app popup windows.
+If the selected project has a `.loop-browser.json` file with `startup.defaultUrl`, Loop Browser
+opens an initial viewport for that URL when the workspace is empty. A checked-in deterministic
+fixture for native UI testing lives under
+`apps/native-macos/TestFixtures/interactive-project`.
 
 ## Project Startup And Login
 
 Loop Browser supports two project-level files for startup and login behavior:
 
 - `.loop-browser.json`
-  Checked in. Use this for shareable project settings like chrome colors, icon path, and the default startup URL.
+  Checked in. Use this for shareable project settings like chrome colors, icon path, and the
+  default startup URL.
 - `.loop-browser.local.json`
-  Repo-local. Use this for the actual agent login username and password. The app auto-adds this file to `.gitignore` when you save a login through the UI.
+  Repo-local. Use this for the actual agent login username and password. The app auto-adds this
+  file to `.gitignore` when you save a login through the UI.
 
 Example `.loop-browser.json`:
 
@@ -51,130 +61,100 @@ Example `.loop-browser.local.json`:
 }
 ```
 
-In the Project panel:
+In `Project Settings`:
 
-- Set `Default URL`, then click `Save Startup`.
+- Set `Default URL`, optional colors, and optional project icon path, then click `Save Appearance`.
 - Enter `Agent login email or username` and `Agent login password`, then click `Save Login`.
-- On matching login pages for that saved `Default URL` origin, the `Use Agent Login` button fills the visible login form without submitting it.
+- On matching login pages for that saved `Default URL` origin, `Use Agent Login` fills the visible
+  login form without submitting it.
 
-Startup URL precedence is:
-
-1. `AGENT_BROWSER_START_URL`
-2. `startup.defaultUrl` from `.loop-browser.json`
-3. the built-in local fixture
-
-Legacy env-based login is still supported through `agentLogin.usernameEnv` and `agentLogin.passwordEnv` in `.loop-browser.json`, but repo-local saved login is now the preferred path.
+Legacy env-based login is still supported through `agentLogin.usernameEnv` and
+`agentLogin.passwordEnv` in `.loop-browser.json`, but repo-local saved login is the preferred
+workflow.
 
 ## MCP Integration
 
-While the app is running, it starts a localhost JSON-RPC MCP server at `127.0.0.1`. On macOS, the registration manifest is written to:
+While the app is running, it starts a localhost JSON-RPC MCP server at `127.0.0.1`. On macOS, the
+registration manifest is written to:
 
-`~/Library/Application Support/Loop Browser/mcp-registration.json`
+`~/Library/Application Support/Loop Browser Native/mcp-registration.json`
 
 That manifest includes the local transport URL and bearer token header needed by tool clients.
 
-The current MCP tool set includes:
+The current MCP tools include:
 
+- `session.list`
+- `session.getCurrent`
+- `workspace.get_state`
 - `browser.listTabs`
 - `browser.getWindowState`
-- `browser.resizeWindow`
 - `page.navigate`
 - `page.reload`
-- `picker.enable`
-- `picker.disable`
-- `picker.lastSelection`
-- `feedback.getState`
-- `feedback.list`
-- `feedback.create`
-- `feedback.reply`
-- `feedback.progress`
-- `feedback.setStatus`
-- `page.viewAsMarkdown`
-- `page.screenshot`
-- `artifacts.get`
-- `artifacts.list`
-- `artifacts.delete`
+- `chrome.getAppearance`
+- `chrome.setAppearance`
+- `create_viewport`
+- `create_viewports`
+- `update_viewport_route`
+- `update_viewport_size`
+- `close_viewport`
+- `refresh_viewport`
+- `refresh_all_viewports`
+- `edit_project_files`
 
-The server also exposes a read-only MCP resource catalog for Codex-style discovery:
+The server also exposes a small read-only resource catalog for discovery:
 
 - `loop-browser:///sessions`
 - `loop-browser:///session/{sessionId}/summary`
-- `loop-browser:///session/{sessionId}/tabs`
-- `loop-browser:///session/{sessionId}/window`
-- `loop-browser:///session/{sessionId}/picker/selection`
-- `loop-browser:///session/{sessionId}/feedback`
-- `loop-browser:///session/{sessionId}/page/markdown`
-- `loop-browser:///session/{sessionId}/artifacts`
-
-Phase 1 of the resource surface is intentionally read-only. It does not expose prompts, SSE streams, subscriptions, or list-changed notifications yet.
-
-Screenshot results are artifact-backed. The tool server stores them under the app data directory and returns metadata plus an `artifactId`, which you can resolve later through `artifacts.get`.
+- `loop-browser:///session/{sessionId}/workspace`
 
 ## Project Notes
 
 - [Human-Agent Collaboration Guide](docs/human-agent-collaboration.md)
-- [Original product plan](agent-browser-plan.md)
+- [Native app spec](docs/mac-canvas-app-spec.md)
+- [Native implementation plan](docs/mac-canvas-app-implementation-plan.md)
 
 ## Workspace Layout
 
-- `apps/desktop`: Electron app, trusted React chrome, and embedded page view.
-- `packages/protocol`: shared command/state types and guards.
-- `packages/selector`: DOM selector normalization and Playwright-style locator helpers.
-- `scripts/mcp-smoke.mjs`: local MCP smoke harness for dev and packaged verification.
+- `apps/native-macos`: native app sources, Xcode project, tests, support package, and fixtures
+- `scripts`: native packaging and UI stress helpers
+- `docs`: product, architecture, and collaboration documentation
 
 ## CI
 
-GitHub Actions installs dependencies, lints, typechecks, tests, builds the app, runs the MCP smoke checks, and packages a macOS artifact on pushes to `main` and on pull requests.
+GitHub Actions runs native support-package tests, native app tests, and macOS packaging on pushes
+to `main` and on pull requests.
 
-## Build Steps
+## Build And Test
 
-1. Install dependencies.
+1. Run the Swift package tests for shared native support code.
 
 ```sh
-npm install
+swift test --package-path apps/native-macos/LoopBrowserNativeSupport
 ```
 
-2. Start the app in development mode.
+2. Run the app, unit, and UI tests.
 
 ```sh
-npm run dev
+HOME=/tmp xcodebuild \
+  -project apps/native-macos/LoopBrowserNative.xcodeproj \
+  -scheme LoopBrowserNative \
+  -destination "platform=macOS,arch=arm64" \
+  CODE_SIGN_IDENTITY="-" \
+  CODE_SIGNING_ALLOWED=YES \
+  test
 ```
 
-3. Run the standard checks.
+3. Run optional native UI stress helpers.
 
 ```sh
-npm run lint
-npm run typecheck
-npm run test
+./scripts/test-native-ui-stress.sh
+./scripts/run-native-stress-tests.sh
 ```
 
-4. Build the packaged desktop app.
+4. Produce the packaged macOS app in `output/`.
 
 ```sh
-npm run build
-```
-
-5. Verify MCP behavior.
-
-Full flow:
-
-```sh
-npm run smoke:mcp
-```
-
-Or run them separately after `npm run build`:
-
-```sh
-npm run smoke:mcp:dev
-npm run smoke:mcp:packaged
-```
-
-The smoke harness launches the app with isolated `AGENT_BROWSER_USER_DATA_DIR`, `AGENT_BROWSER_TOOL_SERVER_PORT`, and `AGENT_BROWSER_START_URL` overrides so it does not reuse your normal profile.
-
-6. Produce the native macOS app in `output/`.
-
-```sh
-npm run package:mac
+./scripts/package-native-mac.sh
 ```
 
 This writes:
@@ -182,14 +162,5 @@ This writes:
 - `output/Loop Browser.app`
 - `output/Loop Browser-macOS.zip`
 
-The `output/` directory is local build and test output and is not intended to be checked into source control.
-
-The package step builds the native app artifact only. Run the native stress tests separately when you want to validate interaction behavior.
-
-If you need the Electron package instead, run:
-
-```sh
-npm run package:desktop:mac
-```
-
-7. If the packaged smoke test fails on full-window screenshots on macOS, grant Screen Recording permission to `Loop Browser.app` and rerun the smoke test.
+The `output/` directory is local build and test output and is not intended to be checked into
+source control.

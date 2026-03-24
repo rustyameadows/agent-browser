@@ -101,11 +101,10 @@ A user can:
 
 ---
 
-## 2. Carry-forward from current Electron app
+## 2. Current Loop Browser behaviors to preserve
 
-The native rewrite starts from greenfield, but v0 must preserve the following behaviors from the
-current Electron product where they already provide strong Project identity and local workflow
-support:
+The current Loop Browser app already establishes several behaviors that v0 must preserve because
+they provide strong Project identity and local workflow support:
 
 - Project settings are rooted in `.loop-browser.json` at the Project root.
 - repo-local credentials live in `.loop-browser.local.json`, stay gitignored, and are not merged

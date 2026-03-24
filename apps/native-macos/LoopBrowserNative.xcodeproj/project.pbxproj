@@ -36,7 +36,7 @@
 		B00000000000000000000017 /* CanvasGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CanvasGeometry.swift; path = LoopBrowserNativeSupport/Sources/LoopBrowserNativeSupport/CanvasGeometry.swift; sourceTree = SOURCE_ROOT; };
 		B00000000000000000000002 /* LoopBrowserNativeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopBrowserNativeApp.swift; sourceTree = "<group>"; };
 		B00000000000000000000004 /* LocalMCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalMCPServer.swift; sourceTree = "<group>"; };
-		B00000000000000000000006 /* loop-browser-app-icon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; name = "loop-browser-app-icon.icns"; path = ../desktop/static/mac/loop-browser-app-icon.icns; sourceTree = SOURCE_ROOT; };
+		B00000000000000000000006 /* loop-browser-app-icon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/loop-browser-app-icon.icns; sourceTree = "<group>"; };
 		B00000000000000000000007 /* LoopBrowserNative.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LoopBrowserNative.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B0000000000000000000001A /* CanvasInputRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasInputRouterTests.swift; sourceTree = "<group>"; };
 		B0000000000000000000001B /* LoopBrowserNativeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LoopBrowserNativeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
